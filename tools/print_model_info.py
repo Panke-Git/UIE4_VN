@@ -16,6 +16,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def parameter_count(module: torch.nn.Module) -> int:
+    return sum(parameter.numel() for parameter in module.parameters())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -29,8 +33,16 @@ def main() -> None:
     version = config["experiment"]["version"]
     build_model = importlib.import_module(f"src.{version}.models").build_model
     model = build_model(config["model"])
-    total = sum(parameter.numel() for parameter in model.parameters())
+    total = parameter_count(model)
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    encoder_params = sum(
+        parameter_count(module) for module in (model.intro, model.encoders, model.downs)
+    )
+    decoder_params = sum(
+        parameter_count(module) for module in (model.ups, model.decoders, model.ending)
+    )
+    bottleneck_params = parameter_count(model.bottleneck_module)
+    bottleneck_name = type(model.bottleneck_module).__name__
     test_input = torch.randn(1, int(config["model"]["img_channel"]), args.height, args.width)
     captured: dict[str, tuple[int, ...]] = {}
     hook = None
@@ -44,14 +56,21 @@ def main() -> None:
     if hook is not None:
         hook.remove()
     print(f"model: {config['experiment']['name']}")
+    print(f"structure: Encoder -> {bottleneck_name} -> Decoder")
+    print(f"middle NAF blocks: {len(model.middle_blks)}")
     print(f"total params: {total}")
     print(f"trainable params: {trainable}")
-    print(f"input test shape: {tuple(test_input.shape)}")
-    print(f"bottleneck shape: {shapes['bottleneck']}")
-    print(f"{version} module input shape: {shapes['module_input']}")
+    print(f"common encoder params: {encoder_params}")
+    print(f"common decoder params: {decoder_params}")
+    print(f"{bottleneck_name} params: {bottleneck_params}")
+    print(f"input shape: {tuple(test_input.shape)}")
+    print(f"encoder output shape: {shapes['encoder_output']}")
+    print(f"bottleneck: {bottleneck_name}")
+    print(f"bottleneck input shape: {shapes['module_input']}")
     if "latent_grid" in captured:
         print(f"GL-INR latent grid shape: {captured['latent_grid']}")
-    print(f"{version} module output shape: {shapes['module_output']}")
+    print(f"bottleneck output shape: {shapes['module_output']}")
+    print(f"decoder output shape: {shapes['decoder_output']}")
     print(f"final output shape: {tuple(output.shape)}")
 
 

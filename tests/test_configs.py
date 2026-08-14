@@ -30,6 +30,20 @@ def test_configs_are_fair_except_experiment_module() -> None:
     backbone_keys = ("type", "img_channel", "width", "enc_blk_nums", "middle_blk_num", "dec_blk_nums")
     for key in backbone_keys:
         assert configs["v1"]["model"][key] == configs["v2"]["model"][key] == configs["v3"]["model"][key]
+    assert configs["v1"]["model"]["middle_blk_num"] == 0
+
+
+def test_all_committed_configs_use_the_replacement_bottleneck() -> None:
+    expected_names = {
+        "v1": "NAFEncDec_Identity",
+        "v2": "NAFEncDec_PointINR",
+        "v3": "NAFEncDec_GLINR",
+    }
+    for path in sorted((ROOT / "configs").glob("config_v*.yaml")):
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+        version = config["experiment"]["version"]
+        assert config["experiment"]["name"] == expected_names[version]
+        assert config["model"]["middle_blk_num"] == 0
 
 
 def test_backbone_parameter_shapes_identical() -> None:
@@ -38,7 +52,7 @@ def test_backbone_parameter_shapes_identical() -> None:
         "v2": build_v2(load("v2")["model"]),
         "v3": build_v3(load("v3")["model"]),
     }
-    prefixes = ("intro.", "encoders.", "downs.", "middle_blks.", "ups.", "decoders.", "ending.")
+    prefixes = ("intro.", "encoders.", "downs.", "ups.", "decoders.", "ending.")
     shapes = {}
     for version, model in models.items():
         shapes[version] = {
@@ -47,6 +61,7 @@ def test_backbone_parameter_shapes_identical() -> None:
             if name.startswith(prefixes)
         }
     assert shapes["v1"] == shapes["v2"] == shapes["v3"]
+    assert all(len(model.middle_blks) == 0 for model in models.values())
 
 
 def test_nafnet_sources_are_byte_identical() -> None:

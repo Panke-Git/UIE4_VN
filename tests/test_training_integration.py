@@ -1,3 +1,4 @@
+import importlib
 import json
 import logging
 import warnings
@@ -5,14 +6,9 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+import pytest
 import torch
 from torch.utils.data import DataLoader
-
-from src.v1.dataset import LSUIDataset
-from src.v1.engine import train_model
-from src.v1.experiment import update_status
-from src.v1.losses import CharbonnierLoss
-from src.v1.models import build_model
 
 
 def _write_pairs(root: Path, split: str, sample_ids: list[str]) -> Path:
@@ -50,13 +46,56 @@ def _disabled_scaler():
         return torch.cuda.amp.GradScaler(enabled=False)
 
 
-def test_one_epoch_synthetic_training_pipeline(tmp_path) -> None:
+def _model_config(version: str) -> dict:
+    config = {
+        "type": "nafnet_small",
+        "img_channel": 3,
+        "width": 8,
+        "enc_blk_nums": [1],
+        "middle_blk_num": 0,
+        "dec_blk_nums": [1],
+    }
+    if version == "v2":
+        config["point_inr"] = {
+            "hidden_dim": 16,
+            "num_frequencies": 2,
+            "depth": 2,
+            "include_raw_coordinate": True,
+            "query_chunk": 64,
+            "residual": True,
+        }
+    elif version == "v3":
+        config["glinr"] = {
+            "latent_dim": 8,
+            "hidden_dim": 16,
+            "latent_stride": 2,
+            "global_num_frequencies": 2,
+            "local_num_frequencies": 0,
+            "include_raw_absolute_coordinate": True,
+            "include_raw_relative_coordinate": True,
+            "local_depth": 2,
+            "global_depth": 2,
+            "fusion_depth": 2,
+            "query_chunk": 64,
+            "residual": True,
+        }
+    return config
+
+
+@pytest.mark.parametrize("version", ("v1", "v2", "v3"))
+def test_one_epoch_synthetic_training_pipeline(tmp_path, version: str) -> None:
+    dataset_module = importlib.import_module(f"src.{version}.dataset")
+    train_model = importlib.import_module(f"src.{version}.engine").train_model
+    update_status = importlib.import_module(f"src.{version}.experiment").update_status
+    charbonnier_loss = importlib.import_module(f"src.{version}.losses").CharbonnierLoss
+    build_model = importlib.import_module(f"src.{version}.models").build_model
+
     data_root = tmp_path / "data"
     train_manifest = _write_pairs(data_root, "train", ["0", "1", "2", "3"])
     validation_manifest = _write_pairs(data_root, "validation", ["10", "11"])
     augmentation = {"hflip": True, "vflip": True, "rot90": True}
     evaluation = {"resize": True, "size": 32}
-    train_dataset = LSUIDataset(
+    train_dataset = dataset_module.LSUIDataset(
         train_manifest,
         data_root,
         "train",
@@ -67,7 +106,7 @@ def test_one_epoch_synthetic_training_pipeline(tmp_path) -> None:
         evaluation=evaluation,
         verify_files=True,
     )
-    validation_dataset = LSUIDataset(
+    validation_dataset = dataset_module.LSUIDataset(
         validation_manifest,
         data_root,
         "validation",
@@ -92,7 +131,7 @@ def test_one_epoch_synthetic_training_pipeline(tmp_path) -> None:
         validation_dataset, batch_size=2, shuffle=False, num_workers=0
     )
     config = {
-        "experiment": {"version": "v1", "seed": 3520},
+        "experiment": {"version": version, "seed": 3520},
         "training": {
             "epochs": 1,
             "amp": False,
@@ -115,20 +154,13 @@ def test_one_epoch_synthetic_training_pipeline(tmp_path) -> None:
             "ssim_sigma": 1.5,
         },
         "logging": {"log_every_steps": 0},
-        "model": {
-            "type": "nafnet_small",
-            "img_channel": 3,
-            "width": 8,
-            "enc_blk_nums": [1],
-            "middle_blk_num": 1,
-            "dec_blk_nums": [1],
-        },
+        "model": _model_config(version),
     }
     torch.manual_seed(3520)
     model = build_model(config["model"])
     initial_parameters = [parameter.detach().clone() for parameter in model.parameters()]
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=0.0)
-    criterion = CharbonnierLoss(1e-3)
+    criterion = charbonnier_loss(1e-3)
 
     run_dir = tmp_path / "run"
     for directory in ("best", "checkpoint", "log", "result"):
@@ -150,8 +182,8 @@ def test_one_epoch_synthetic_training_pipeline(tmp_path) -> None:
         device=torch.device("cpu"),
         config=config,
         run_dir=run_dir,
-        logger=_logger("synthetic.train"),
-        validation_logger=_logger("synthetic.validation"),
+        logger=_logger(f"synthetic.{version}.train"),
+        validation_logger=_logger(f"synthetic.{version}.validation"),
         status=state,
     )
     state = update_status(

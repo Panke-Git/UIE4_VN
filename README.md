@@ -1,6 +1,6 @@
 # UIE4_VN
 
-UIE4_VN is a self-contained, auditable LSUI underwater-image-enhancement research framework for one controlled question: does a feature-level Global-Local Implicit Neural Representation improve on the same NAFNet-small encoder/decoder and on a point-wise absolute-coordinate INR baseline?
+UIE4_VN is a self-contained, auditable LSUI underwater-image-enhancement research framework for one controlled question: when the encoder and decoder are fixed, does a feature-level Global-Local Implicit Neural Representation outperform an identity bottleneck and a point-wise absolute-coordinate INR bottleneck?
 
 The repository deliberately contains three isolated implementations. No version imports another version and there is no shared experiment-code package.
 
@@ -8,9 +8,11 @@ The repository deliberately contains three isolated implementations. No version 
 
 | Version | Bottleneck path | Everything else |
 |---|---|---|
-| v1 | `E -> decoder` | Fixed NAFNet-small, data, loss, optimizer and protocol |
+| v1 | `E -> Identity(E) -> decoder` | Fixed NAF-style encoder/decoder, data, loss, optimizer and protocol |
 | v2 | `E -> Point-INR(E, abs-coord) -> decoder` | Identical to v1 |
 | v3 | `E -> GL-INR(E, abs/relative-coord) -> decoder` | Identical to v1 |
+
+The current ablation isolates the bottleneck representation. All three variants use the same intro, encoder stages, downsampling, decoder stages, upsampling, skip connections, ending convolution, and global image residual. Their only structural difference is `Identity` versus `Point-INR` versus `GL-INR`. The formal configurations intentionally set `middle_blk_num: 0`: there are no NAF middle blocks before or after the experimental bottleneck.
 
 Point-INR is a deliberately named feature-conditioned, absolute-coordinate baseline, not a claim of line-by-line reproduction of another INR paper. It concatenates each bottleneck feature with Fourier-encoded pixel-center coordinates, predicts a same-shaped feature residual with a chunked MLP, and adds it to `E`.
 
@@ -22,7 +24,7 @@ The committed manifests in `split/lsui19/` are the protocol and must not be rege
 
 - `train.tsv`: 3466 samples used for gradient training.
 - `validation.tsv`: 385 samples used for validation and checkpoint selection.
-- `test.tsv`: 428 held-out samples, only read by an explicit `src.v*.test` command.
+- `test.tsv`: 428 held-out samples; test images and performance are accessed only by an explicit `src.v*.test` command.
 - `train + validation = 3851`, corresponding to the original LSUI training portion.
 
 The actual files have no header and exactly three tab-separated fields: `sample_id`, relative input path, relative GT path. Training paths begin with `Train/input` and `Train/GT`; test paths begin with `Val/input` and `Val/GT`.
@@ -66,7 +68,7 @@ python -m src.v3.train \
   --seed 1234 \
   --gpu 0 \
   --data-root /root/autodl-tmp/pro/publicdata/LSUI19_dup_train \
-  --name NAFNetSmall_GLINR
+  --name NAFEncDec_GLINR
 ```
 
 All train entry points support `--config`, `--seed`, `--gpu`, `--data-root`, `--name`, and `--resume`. CUDA is selected from the requested index rather than hard-coded. CPU is supported for smoke checks; CUDA AMP disables itself on CPU. `training.deterministic: true` enables deterministic PyTorch behavior with explicit warnings for unsupported operations.
@@ -138,7 +140,7 @@ python -m pytest -q
 
 ## Configuration and architecture
 
-All experiment values live in YAML. Defaults are a 3-channel, width-32 NAFNet with encoder blocks `[2,2,2]`, four middle blocks, decoder blocks `[2,2,2]`, three downsamplings (factor 8), and a 256-channel bottleneck. The network pads arbitrary input height/width to the factor and crops its globally residual output back to the original shape.
+All experiment values live in YAML. Defaults are a 3-channel, width-32 NAF-style encoder/decoder with encoder blocks `[2,2,2]`, zero middle blocks, decoder blocks `[2,2,2]`, three downsamplings (factor 8), and a 256-channel bottleneck feature. The encoder output goes directly through the version-specific bottleneck and then into the decoder. The network pads arbitrary input height/width to the factor and crops its globally residual output back to the original shape.
 
 Training uses synchronized paired 256×256 random crops, horizontal/vertical flips and 90-degree rotations. Small pairs are reflect-padded. Validation/test are deterministic and default to paired 256×256 bilinear resizing; set `evaluation.resize: false` for native-resolution evaluation. The same Charbonnier objective, AdamW settings, metric implementation, initialization, AMP behavior, and checkpoint protocol apply to every version.
 

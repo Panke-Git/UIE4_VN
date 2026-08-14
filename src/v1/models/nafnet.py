@@ -86,19 +86,21 @@ class NAFBlock(nn.Module):
 
 
 class NAFNet(nn.Module):
-    """NAFNet-small backbone with an optional bottleneck feature transform."""
+    """NAF-style encoder/decoder with a replaceable phase-one bottleneck."""
 
     def __init__(
         self,
         img_channel: int = 3,
         width: int = 32,
-        middle_blk_num: int = 4,
+        middle_blk_num: int = 0,
         enc_blk_nums: Sequence[int] = (2, 2, 2),
         dec_blk_nums: Sequence[int] = (2, 2, 2),
     ) -> None:
         super().__init__()
         if len(enc_blk_nums) != len(dec_blk_nums):
             raise ValueError("Encoder and decoder stage counts must match")
+        if middle_blk_num < 0:
+            raise ValueError("middle_blk_num must be non-negative")
         self.img_channel = img_channel
         self.width = width
         self.enc_blk_nums = tuple(enc_blk_nums)
@@ -120,6 +122,8 @@ class NAFNet(nn.Module):
             channels *= 2
 
         self.bottleneck_channels = channels
+        # Phase-one configs deliberately set this to zero so the encoder output
+        # goes directly through Identity, Point-INR, or GL-INR before decoding.
         self.middle_blks = nn.Sequential(*[NAFBlock(channels) for _ in range(middle_blk_num)])
 
         for blocks in dec_blk_nums:
@@ -158,12 +162,15 @@ class NAFNet(nn.Module):
         padded, height, width = self._pad(x)
         bottleneck, skips = self.encode(padded)
         transformed = self.bottleneck_module(bottleneck)
-        output = self.decode(transformed, skips) + padded
+        decoded = self.decode(transformed, skips)
+        output = decoded + padded
         shapes = {
             "input": tuple(x.shape),
+            "encoder_output": tuple(bottleneck.shape),
             "bottleneck": tuple(bottleneck.shape),
             "module_input": tuple(bottleneck.shape),
             "module_output": tuple(transformed.shape),
+            "decoder_output": tuple(decoded[..., :height, :width].shape),
             "output": tuple(output[..., :height, :width].shape),
         }
         return output[..., :height, :width], shapes

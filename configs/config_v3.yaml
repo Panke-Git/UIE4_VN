@@ -1,6 +1,6 @@
 experiment:
   version: v3
-  name: NAFNetSmall_GLINR
+  name: NAFEncDec_GLINR
   seed: 3520
   output_root: experiments
 
@@ -22,7 +22,7 @@ model:
   img_channel: 3
   width: 32
   enc_blk_nums: [2, 2, 2]
-  middle_blk_num: 4
+  middle_blk_num: 0
   dec_blk_nums: [2, 2, 2]
   glinr:
     latent_dim: 128
@@ -89,4 +89,3 @@ logging:
   save_metrics_history_json: true
   save_metrics_history_csv: true
   log_every_steps: 0
-

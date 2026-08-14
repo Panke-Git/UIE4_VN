@@ -1,2 +1,1 @@
-"""Version 3: NAFNet-small with Global-Local INR."""
-
+"""Version 3: NAF encoder/decoder with a Global-Local INR bottleneck."""

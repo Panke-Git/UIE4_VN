@@ -1,2 +1,1 @@
-"""Version 1: NAFNet-small baseline."""
-
+"""Version 1: NAF encoder/decoder with an identity bottleneck."""

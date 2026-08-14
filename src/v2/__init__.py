@@ -1,2 +1,1 @@
-"""Version 2: NAFNet-small with point-wise absolute-coordinate INR."""
-
+"""Version 2: NAF encoder/decoder with a point-wise absolute-coordinate INR bottleneck."""
