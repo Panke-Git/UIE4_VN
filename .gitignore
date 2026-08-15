@@ -8,6 +8,7 @@ venv/
 
 experiments/*
 !experiments/.gitkeep
+diagnostics/
 
 *.pt
 *.pth
@@ -16,4 +17,3 @@ experiments/*
 .DS_Store
 .idea/
 .vscode/
-

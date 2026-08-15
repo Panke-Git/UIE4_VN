@@ -133,10 +133,27 @@ python tools/print_model_info.py --config configs/config_v3.yaml
 # Side-by-side completed or partial runs; missing test results print N/A
 python tools/compare_runs.py experiments/<v1_run> experiments/<v2_run> experiments/<v3_run>
 
+# Full model-free LSUI split/difficulty/duplicate diagnostic
+python tools/diagnose_lsui.py --config configs/config_v1.yaml
+
+# AutoDL data-root override (the CLI value takes precedence over YAML)
+python tools/diagnose_lsui.py \
+  --config configs/config_v1.yaml \
+  --data-root /root/autodl-tmp/pro/publicdata/LSUI19_dup_train
+
 # Static and numerical verification
 python -m compileall src
 python -m pytest -q
 ```
+
+The LSUI diagnostic reads the fixed TSVs without modifying them and does not run a
+model. It compares raw Input→GT difficulty at the current paired 256×256 bilinear
+evaluation size and, where native shapes match, at native resolution. It also
+reports resolution and basic RGB/luminance/saturation distributions; raw-file,
+decoded-pixel, and cross-split exact duplicates; and cross-split 64-bit dHash
+near-duplicate candidates for manual inspection. Results are written beneath a
+timestamped `diagnostics/lsui19_YYYYMMDD_HHMMSS/` directory. No source images are
+copied there.
 
 ## Configuration and architecture
 

@@ -1,6 +1,6 @@
 numpy
 Pillow
 PyYAML
+matplotlib
 pytest
 tqdm
-
