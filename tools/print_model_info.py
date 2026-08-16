@@ -33,8 +33,30 @@ def main() -> None:
     version = config["experiment"]["version"]
     build_model = importlib.import_module(f"src.{version}.models").build_model
     model = build_model(config["model"])
+    model.eval()
     total = parameter_count(model)
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    if version == "v4":
+        test_input = torch.randn(
+            1, int(config["model"]["in_channels"]), args.height, args.width
+        )
+        with torch.no_grad():
+            output, shapes = model.forward_with_shapes(test_input)
+        print(f"model: {config['experiment']['name']}")
+        print("model family: Plain U-Net")
+        print("structure: four-level encoder -> bottleneck -> concat-skip decoder")
+        print("skip method: channel-wise torch.cat")
+        print(f"output activation: {config['model']['output_activation']}")
+        print("global image residual: disabled")
+        print(f"total params: {total}")
+        print(f"trainable params: {trainable}")
+        print(f"input shape: {shapes['input']}")
+        for level in range(1, 5):
+            print(f"E{level} shape: {shapes[f'e{level}']}")
+        print(f"bottleneck shape: {shapes['bottleneck']}")
+        print(f"decoder output shape: {shapes['decoder_output']}")
+        print(f"final output shape: {tuple(output.shape)}")
+        return
     encoder_params = sum(
         parameter_count(module) for module in (model.intro, model.encoders, model.downs)
     )

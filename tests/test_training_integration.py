@@ -47,6 +47,15 @@ def _disabled_scaler():
 
 
 def _model_config(version: str) -> dict:
+    if version == "v4":
+        return {
+            "type": "plain_unet",
+            "in_channels": 3,
+            "out_channels": 3,
+            "base_channels": 8,
+            "use_batch_norm": True,
+            "output_activation": "sigmoid",
+        }
     config = {
         "type": "nafnet_small",
         "img_channel": 3,
@@ -82,7 +91,7 @@ def _model_config(version: str) -> dict:
     return config
 
 
-@pytest.mark.parametrize("version", ("v1", "v2", "v3"))
+@pytest.mark.parametrize("version", ("v1", "v2", "v3", "v4"))
 def test_one_epoch_synthetic_training_pipeline(tmp_path, version: str) -> None:
     dataset_module = importlib.import_module(f"src.{version}.dataset")
     train_model = importlib.import_module(f"src.{version}.engine").train_model

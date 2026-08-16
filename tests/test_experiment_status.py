@@ -4,7 +4,7 @@ import json
 import pytest
 
 
-@pytest.mark.parametrize("version", ("v1", "v2", "v3"))
+@pytest.mark.parametrize("version", ("v1", "v2", "v3", "v4"))
 def test_running_completed_and_failed_status_updates(tmp_path, version: str) -> None:
     update_status = importlib.import_module(f"src.{version}.experiment").update_status
     state = {"status": "running", "last_epoch": 0}

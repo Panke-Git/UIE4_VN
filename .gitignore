@@ -9,6 +9,7 @@ venv/
 experiments/*
 !experiments/.gitkeep
 diagnostics/
+analysis/
 
 *.pt
 *.pth
