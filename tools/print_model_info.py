@@ -36,24 +36,44 @@ def main() -> None:
     model.eval()
     total = parameter_count(model)
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
-    if version == "v4":
+    if version in {"v4", "v5", "v6"}:
         test_input = torch.randn(
             1, int(config["model"]["in_channels"]), args.height, args.width
         )
+        captured: dict[str, tuple[int, ...]] = {}
+        bottleneck_module = getattr(model, "bottleneck_module", None)
+        latent_projection = getattr(bottleneck_module, "latent_projection", None)
+        hook = None
+        if latent_projection is not None:
+            hook = latent_projection.register_forward_hook(
+                lambda _module, _inputs, output: captured.update(latent_grid=tuple(output.shape))
+            )
         with torch.no_grad():
             output, shapes = model.forward_with_shapes(test_input)
+        if hook is not None:
+            hook.remove()
+        bottleneck_name = type(bottleneck_module).__name__ if bottleneck_module else "Identity"
+        bottleneck_params = parameter_count(bottleneck_module) if bottleneck_module else 0
         print(f"model: {config['experiment']['name']}")
         print("model family: Plain U-Net")
-        print("structure: four-level encoder -> bottleneck -> concat-skip decoder")
+        print(f"structure: four-level encoder -> {bottleneck_name} -> concat-skip decoder")
         print("skip method: channel-wise torch.cat")
         print(f"output activation: {config['model']['output_activation']}")
         print("global image residual: disabled")
         print(f"total params: {total}")
         print(f"trainable params: {trainable}")
+        print(f"common Plain U-Net params: {total - bottleneck_params}")
+        print(f"{bottleneck_name} params: {bottleneck_params}")
         print(f"input shape: {shapes['input']}")
         for level in range(1, 5):
             print(f"E{level} shape: {shapes[f'e{level}']}")
         print(f"bottleneck shape: {shapes['bottleneck']}")
+        if "module_input" in shapes:
+            print(f"bottleneck module: {bottleneck_name}")
+            print(f"module input shape: {shapes['module_input']}")
+            if "latent_grid" in captured:
+                print(f"GL-INR latent grid shape: {captured['latent_grid']}")
+            print(f"module output shape: {shapes['module_output']}")
         print(f"decoder output shape: {shapes['decoder_output']}")
         print(f"final output shape: {tuple(output.shape)}")
         return

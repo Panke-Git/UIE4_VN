@@ -47,15 +47,44 @@ def _disabled_scaler():
 
 
 def _model_config(version: str) -> dict:
-    if version == "v4":
-        return {
-            "type": "plain_unet",
+    if version in {"v4", "v5", "v6"}:
+        config = {
+            "type": {
+                "v4": "plain_unet",
+                "v5": "plain_unet_point_inr",
+                "v6": "plain_unet_glinr",
+            }[version],
             "in_channels": 3,
             "out_channels": 3,
             "base_channels": 8,
             "use_batch_norm": True,
             "output_activation": "sigmoid",
         }
+        if version == "v5":
+            config["point_inr"] = {
+                "hidden_dim": 16,
+                "num_frequencies": 2,
+                "depth": 2,
+                "include_raw_coordinate": True,
+                "query_chunk": 64,
+                "residual": True,
+            }
+        elif version == "v6":
+            config["glinr"] = {
+                "latent_dim": 8,
+                "hidden_dim": 16,
+                "latent_stride": 2,
+                "global_num_frequencies": 2,
+                "local_num_frequencies": 0,
+                "include_raw_absolute_coordinate": True,
+                "include_raw_relative_coordinate": True,
+                "local_depth": 2,
+                "global_depth": 2,
+                "fusion_depth": 2,
+                "query_chunk": 64,
+                "residual": True,
+            }
+        return config
     config = {
         "type": "nafnet_small",
         "img_channel": 3,
@@ -91,7 +120,7 @@ def _model_config(version: str) -> dict:
     return config
 
 
-@pytest.mark.parametrize("version", ("v1", "v2", "v3", "v4"))
+@pytest.mark.parametrize("version", ("v1", "v2", "v3", "v4", "v5", "v6"))
 def test_one_epoch_synthetic_training_pipeline(tmp_path, version: str) -> None:
     dataset_module = importlib.import_module(f"src.{version}.dataset")
     train_model = importlib.import_module(f"src.{version}.engine").train_model
