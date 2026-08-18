@@ -1,23 +1,34 @@
 # UIE4_VN
 
-UIE4_VN is a self-contained, auditable LSUI underwater-image-enhancement research framework. Its six versions form a controlled 2×3 experiment: two fixed backbones (NAF encoder/decoder and Plain U-Net) crossed with three bottleneck choices (Identity, Point-INR, and GL-INR).
+UIE4_VN is a self-contained, auditable LSUI underwater-image-enhancement research framework. Its ten versions study INR type, INR position, and backbone under a fixed LSUI protocol.
 
-The repository deliberately contains six isolated implementations. No version imports another version and there is no shared experiment-code package.
+Versions v1-v6 preserve their original isolated implementations. The pre-INR variants v7-v10 use one thin shared composition wrapper and directly reuse the already-audited v1/v4 backbone and v2/v3 INR classes, so their mathematical implementations cannot drift.
 
 ## Controlled variants
 
-| Backbone | Identity | Point-INR | GL-INR |
+### Bottleneck-INR
+
+| Backbone | Baseline | Point-INR | GL-INR |
 |---|---|---|---|
 | NAF encoder/decoder | v1 | v2 | v3 |
 | Plain U-Net | v4 | v5 | v6 |
 
-Within each row, the ablation isolates the bottleneck representation. v1-v3 use the same intro, NAF encoder stages, downsampling, decoder stages, upsampling, skip connections, ending convolution, and global image residual. Their only structural difference is `Identity` versus `Point-INR` versus `GL-INR`. The formal configurations intentionally set `middle_blk_num: 0`: there are no NAF middle blocks before or after the experimental bottleneck.
+### Pre-INR
+
+| Backbone | Baseline | Pre-Point-INR | Pre-GL-INR |
+|---|---|---|---|
+| Plain U-Net | v4 | v7 | v8 |
+| NAF encoder/decoder | v1 | v9 | v10 |
+
+Within each matrix row, the ablation isolates the specified INR condition. v1-v3 use the same intro, NAF encoder stages, downsampling, decoder stages, upsampling, skip connections, ending convolution, and global image residual. Their only structural difference is `Identity` versus `Point-INR` versus `GL-INR`. The formal configurations intentionally set `middle_blk_num: 0`: there are no NAF middle blocks before or after the experimental bottleneck.
 
 v4-v6 use the exact same classic four-level Plain U-Net backbone with Conv-BatchNorm-ReLU DoubleConv blocks, max-pooling, transposed-convolution upsampling, concat skip connections, and a direct sigmoid RGB output. v5 applies the unchanged v2 Point-INR and v6 applies the unchanged v3 GL-INR to the 1024-channel U-Net bottleneck feature, directly before the first decoder upsampling. Both INR modules keep their internal residual; the composition adds no second outer residual. These versions use the same LSUI split and training/evaluation protocol to measure INR × backbone interaction. **They are controlled experiments, not additional proposed architectures.**
 
-Point-INR is a deliberately named feature-conditioned, absolute-coordinate baseline, not a claim of line-by-line reproduction of another INR paper. It concatenates each bottleneck feature with Fourier-encoded pixel-center coordinates, predicts a same-shaped feature residual with a chunked MLP, and adds it to `E`.
+v7-v10 instead apply exactly one INR before the backbone: `RGB [B,3,H,W] -> INR(channels=3) -> unchanged backbone -> RGB`. v7/v8 use the v4 Plain U-Net; v9/v10 use the v1 NAF encoder/decoder with its identity bottleneck. No adapter, clamp, normalization, intermediate INR, or extra output activation is inserted. Zero-initialized INR correction layers make each pre-INR model initially identical to its corresponding baseline when backbone states match.
 
-GL-INR projects `E` to a stride-2 latent grid. Its local branch queries four bounded geometric neighbors with one shared MLP and bilinearly ensembles the resulting implicit features. Its separate global branch reads only Fourier-encoded absolute coordinates. A fusion MLP maps concatenated local/global features back to the bottleneck channel count. Phase one intentionally has no local Fourier encoding, cell decoding, unfolding, attention, physical prior, RGB head, GAN, diffusion, or vertical stack.
+Point-INR is a deliberately named feature-conditioned, absolute-coordinate baseline, not a claim of line-by-line reproduction of another INR paper. It concatenates each input feature vector with Fourier-encoded pixel-center coordinates, predicts a same-shaped residual with a chunked MLP, and adds it to the module input.
+
+GL-INR projects its input tensor to a stride-2 latent grid. Its local branch queries four bounded geometric neighbors with one shared MLP and bilinearly ensembles the resulting implicit features. Its separate global branch reads only Fourier-encoded absolute coordinates. A fusion MLP maps concatenated local/global features back to the module input channel count. Phase one intentionally has no local Fourier encoding, cell decoding, unfolding, attention, physical prior, RGB head, GAN, diffusion, or vertical stack.
 
 ## Fixed LSUI protocol
 
@@ -66,6 +77,10 @@ python -m src.v3.train
 python -m src.v4.train --gpu 0
 python -m src.v5.train --config configs/config_v5.yaml --seed 3520 --gpu 0
 python -m src.v6.train --config configs/config_v6.yaml --seed 3520 --gpu 1
+python -m src.v7.train --config configs/config_v7.yaml --seed 3520 --gpu 0
+python -m src.v8.train --config configs/config_v8.yaml --seed 3520 --gpu 1
+python -m src.v9.train --config configs/config_v9.yaml --seed 3520 --gpu 0
+python -m src.v10.train --config configs/config_v10.yaml --seed 3520 --gpu 1
 
 python -m src.v3.train \
   --config configs/config_v3.yaml \
@@ -75,7 +90,7 @@ python -m src.v3.train \
   --name NAFEncDec_GLINR
 ```
 
-All train entry points support `--config`, `--seed`, `--gpu`, `--data-root`, `--name`, and `--resume`; v4-v6 additionally support a `--batch-size` override. CUDA is selected from the requested index rather than hard-coded. CPU is supported for smoke checks; CUDA AMP disables itself on CPU. `training.deterministic: true` enables deterministic PyTorch behavior with explicit warnings for unsupported operations.
+All train entry points support `--config`, `--seed`, `--gpu`, `--data-root`, `--name`, and `--resume`; the Plain U-Net-derived v4-v8 entry points additionally support a `--batch-size` override. CUDA is selected from the requested index rather than hard-coded. CPU is supported for smoke checks; CUDA AMP disables itself on CPU. `training.deterministic: true` enables deterministic PyTorch behavior with explicit warnings for unsupported operations.
 
 Training validates all train/validation files before optimization. It reads test metadata only to audit fixed counts/leakage and snapshot the protocol; it never creates a test Dataset, opens test images, or uses test performance for selection. `test.auto_run_after_training` remains false.
 
@@ -104,6 +119,10 @@ python -m src.v3.test --run-dir experiments/<v3_run> --checkpoint best_psnr --gp
 python -m src.v4.test --run-dir experiments/<v4_run> --checkpoint best_psnr --gpu 0
 python -m src.v5.test --run-dir experiments/<v5_run> --checkpoint best_psnr --gpu 0
 python -m src.v6.test --run-dir experiments/<v6_run> --checkpoint best_psnr --gpu 1
+python -m src.v7.test --run-dir experiments/<v7_run> --checkpoint best_psnr --gpu 0
+python -m src.v8.test --run-dir experiments/<v8_run> --checkpoint best_psnr --gpu 1
+python -m src.v9.test --run-dir experiments/<v9_run> --checkpoint best_psnr --gpu 0
+python -m src.v10.test --run-dir experiments/<v10_run> --checkpoint best_psnr --gpu 1
 ```
 
 Checkpoint selectors are `best_psnr`, `best_ssim`, `best_loss`, and `last`; an explicit checkpoint path is also accepted. Test allows `--gpu` and `--data-root` overrides but no architecture override. Outputs include all enhanced PNGs, per-image metrics, a summary, ten deterministic sample images, their fixed index manifest, and a 10×3 `input | enhanced | GT` grid.
@@ -139,9 +158,11 @@ python tools/print_model_info.py --config configs/config_v3.yaml
 python tools/print_model_info.py --config configs/config_v4.yaml
 python tools/print_model_info.py --config configs/config_v5.yaml
 python tools/print_model_info.py --config configs/config_v6.yaml
+python tools/print_model_info.py --config configs/config_v7.yaml
+python tools/print_model_info.py --config configs/config_v10.yaml
 
 # Side-by-side completed or partial runs; missing test results print N/A
-python tools/compare_runs.py experiments/<v1_run> experiments/<v2_run> experiments/<v3_run> experiments/<v4_run> experiments/<v5_run> experiments/<v6_run>
+python tools/compare_runs.py experiments/<v1_run> experiments/<v2_run> experiments/<v3_run> experiments/<v4_run> experiments/<v5_run> experiments/<v6_run> experiments/<v7_run> experiments/<v8_run> experiments/<v9_run> experiments/<v10_run>
 
 # Full model-free LSUI split/difficulty/duplicate diagnostic
 python tools/diagnose_lsui.py --config configs/config_v1.yaml
@@ -184,13 +205,15 @@ All experiment values live in YAML. Defaults are a 3-channel, width-32 NAF-style
 
 v4-v6 instead use the standard Plain U-Net channel path `64→128→256→512→1024→512→256→128→64`, four max-pooling stages, transposed-convolution upsampling, concat skips, and sigmoid output. They pad arbitrary inputs to a multiple of 16 and crop the direct prediction back to the original size. They have no global image residual and are intentionally not parameter-matched to v1-v3. v4 sends the 1024-channel bottleneck directly to the decoder; v5/v6 replace that identity path with Point-INR/GL-INR while preserving the same tensor shape.
 
+The v7-v10 pre-INR modules always receive and return three-channel tensors at the original input resolution. Point-INR therefore has the same 20,739 parameters in v7 and v9; GL-INR has the same 139,651 parameters in v8 and v10. Their residual outputs are passed directly into the backbone without clamping.
+
 Training uses synchronized paired 256×256 random crops, horizontal/vertical flips and 90-degree rotations. Small pairs are reflect-padded. Validation/test are deterministic and default to paired 256×256 bilinear resizing; set `evaluation.resize: false` for native-resolution evaluation. The same Charbonnier objective, AdamW settings, metric implementation, initialization, AMP behavior, and checkpoint protocol apply to every version.
 
 Point/GL queries are chunked by `query_chunk` to bound MLP query memory. This limits the implicit-query intermediates, not the convolutional backbone activation memory.
 
 ## Version isolation
 
-Do not modify existing versions to share code. A future version should copy one complete stable version into its own `src/vN`, keep all imports version-relative, add its own config, and introduce only the specified experimental difference.
+Do not refactor v1-v6 in ways that change existing behavior or checkpoint keys. New isolated experiments may copy a stable version; controlled cross-backbone experiments may instead use a small shared composition layer when direct reuse is necessary to guarantee identical backbone/INR implementations.
 
 ## Git policy
 

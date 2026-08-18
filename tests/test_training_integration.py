@@ -47,12 +47,14 @@ def _disabled_scaler():
 
 
 def _model_config(version: str) -> dict:
-    if version in {"v4", "v5", "v6"}:
+    if version in {"v4", "v5", "v6", "v7", "v8"}:
         config = {
             "type": {
                 "v4": "plain_unet",
                 "v5": "plain_unet_point_inr",
                 "v6": "plain_unet_glinr",
+                "v7": "plain_unet_pre_point_inr",
+                "v8": "plain_unet_pre_glinr",
             }[version],
             "in_channels": 3,
             "out_channels": 3,
@@ -60,7 +62,7 @@ def _model_config(version: str) -> dict:
             "use_batch_norm": True,
             "output_activation": "sigmoid",
         }
-        if version == "v5":
+        if version in {"v5", "v7"}:
             config["point_inr"] = {
                 "hidden_dim": 16,
                 "num_frequencies": 2,
@@ -69,7 +71,7 @@ def _model_config(version: str) -> dict:
                 "query_chunk": 64,
                 "residual": True,
             }
-        elif version == "v6":
+        elif version in {"v6", "v8"}:
             config["glinr"] = {
                 "latent_dim": 8,
                 "hidden_dim": 16,
@@ -86,14 +88,17 @@ def _model_config(version: str) -> dict:
             }
         return config
     config = {
-        "type": "nafnet_small",
+        "type": {
+            "v9": "nafnet_pre_point_inr",
+            "v10": "nafnet_pre_glinr",
+        }.get(version, "nafnet_small"),
         "img_channel": 3,
         "width": 8,
         "enc_blk_nums": [1],
         "middle_blk_num": 0,
         "dec_blk_nums": [1],
     }
-    if version == "v2":
+    if version in {"v2", "v9"}:
         config["point_inr"] = {
             "hidden_dim": 16,
             "num_frequencies": 2,
@@ -102,7 +107,7 @@ def _model_config(version: str) -> dict:
             "query_chunk": 64,
             "residual": True,
         }
-    elif version == "v3":
+    elif version in {"v3", "v10"}:
         config["glinr"] = {
             "latent_dim": 8,
             "hidden_dim": 16,
@@ -120,7 +125,9 @@ def _model_config(version: str) -> dict:
     return config
 
 
-@pytest.mark.parametrize("version", ("v1", "v2", "v3", "v4", "v5", "v6"))
+@pytest.mark.parametrize(
+    "version", ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10")
+)
 def test_one_epoch_synthetic_training_pipeline(tmp_path, version: str) -> None:
     dataset_module = importlib.import_module(f"src.{version}.dataset")
     train_model = importlib.import_module(f"src.{version}.engine").train_model

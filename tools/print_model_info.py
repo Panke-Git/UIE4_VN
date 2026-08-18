@@ -36,6 +36,51 @@ def main() -> None:
     model.eval()
     total = parameter_count(model)
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    if hasattr(model, "pre_inr") and hasattr(model, "backbone"):
+        input_channels = int(
+            config["model"].get("in_channels", config["model"].get("img_channel"))
+        )
+        test_input = torch.rand(1, input_channels, args.height, args.width)
+        captured: dict[str, tuple[int, ...]] = {}
+        latent_projection = getattr(model.pre_inr, "latent_projection", None)
+        hook = None
+        if latent_projection is not None:
+            hook = latent_projection.register_forward_hook(
+                lambda _module, _inputs, output: captured.update(latent_grid=tuple(output.shape))
+            )
+        with torch.no_grad():
+            pre_output = model.forward_pre_inr(test_input)
+            output, shapes = model.forward_with_shapes(test_input)
+        if hook is not None:
+            hook.remove()
+        pre_name = type(model.pre_inr).__name__
+        backbone_name = type(model.backbone).__name__
+        pre_params = parameter_count(model.pre_inr)
+        print(f"model: {config['experiment']['name']}")
+        print(f"structure: RGB -> {pre_name}(channels=3) -> {backbone_name} -> RGB")
+        print(f"total params: {total}")
+        print(f"trainable params: {trainable}")
+        print(f"common {backbone_name} params: {parameter_count(model.backbone)}")
+        print(f"pre-{pre_name} params: {pre_params}")
+        print(f"input shape: {shapes['input']}")
+        print(f"pre-INR output shape: {shapes['pre_inr_output']}")
+        if "latent_grid" in captured:
+            print(f"pre-GL-INR latent grid shape: {captured['latent_grid']}")
+        if "backbone_bottleneck" in shapes:
+            print(f"backbone bottleneck shape: {shapes['backbone_bottleneck']}")
+        print(
+            "input stats: "
+            f"min={test_input.min().item():.8f} max={test_input.max().item():.8f} "
+            f"mean={test_input.mean().item():.8f} std={test_input.std().item():.8f}"
+        )
+        print(
+            "pre-INR stats: "
+            f"min={pre_output.min().item():.8f} max={pre_output.max().item():.8f} "
+            f"mean={pre_output.mean().item():.8f} std={pre_output.std().item():.8f}"
+        )
+        print(f"pre-INR max abs difference from input: {(pre_output - test_input).abs().max().item():.8g}")
+        print(f"final output shape: {tuple(output.shape)}")
+        return
     if version in {"v4", "v5", "v6"}:
         test_input = torch.randn(
             1, int(config["model"]["in_channels"]), args.height, args.width
