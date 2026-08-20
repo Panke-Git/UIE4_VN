@@ -91,6 +91,8 @@ def _model_config(version: str) -> dict:
         "type": {
             "v9": "nafnet_pre_point_inr",
             "v10": "nafnet_pre_glinr",
+            "v11": "nafnet_uicf_pre_backbone",
+            "v12": "nafnet_uicf_parallel_branch",
         }.get(version, "nafnet_small"),
         "img_channel": 3,
         "width": 8,
@@ -122,11 +124,21 @@ def _model_config(version: str) -> dict:
             "query_chunk": 64,
             "residual": True,
         }
+    elif version in {"v11", "v12"}:
+        config["uicf"] = {
+            "feat_dim": 48,
+            "num_frequencies": 8,
+            "mlp_hidden_dim": 128,
+            "mlp_hidden_layers": 3,
+            "anchor_hidden_dim": 64,
+            "query_chunk_size": 65536,
+        }
     return config
 
 
 @pytest.mark.parametrize(
-    "version", ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10")
+    "version",
+    ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"),
 )
 def test_one_epoch_synthetic_training_pipeline(tmp_path, version: str) -> None:
     dataset_module = importlib.import_module(f"src.{version}.dataset")

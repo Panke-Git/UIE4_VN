@@ -5,7 +5,8 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "version", ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10")
+    "version",
+    ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"),
 )
 def test_running_completed_and_failed_status_updates(tmp_path, version: str) -> None:
     update_status = importlib.import_module(f"src.{version}.experiment").update_status

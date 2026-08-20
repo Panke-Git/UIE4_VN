@@ -36,6 +36,29 @@ def main() -> None:
     model.eval()
     total = parameter_count(model)
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    if hasattr(model, "uicf") and hasattr(model, "backbone"):
+        test_input = torch.rand(1, int(config["model"]["img_channel"]), args.height, args.width)
+        with torch.no_grad():
+            output, details = model.forward_with_uicf_details(test_input)
+            baseline_output = model.backbone(test_input)
+        uicf_params = parameter_count(model.uicf)
+        topology = type(model).__name__
+        print(f"model: {config['experiment']['name']}")
+        print(f"structure: {topology} with {type(model.backbone).__name__}")
+        print(f"total params: {total}")
+        print(f"trainable params: {trainable}")
+        print(f"common backbone params: {parameter_count(model.backbone)}")
+        print(f"UICF-INR params: {uicf_params}")
+        print(f"input shape: {tuple(test_input.shape)}")
+        print(f"UICF enhanced shape: {tuple(details.enhanced.shape)}")
+        print(f"correction field shape: {tuple(details.correction_field.shape)}")
+        print(f"chromatic anchor shape: {tuple(details.chromatic_anchor.shape)}")
+        print(f"global feature shape: {tuple(details.global_feature.shape)}")
+        print(f"initial correction max abs: {details.correction_field.abs().max().item():.8g}")
+        print(f"initial UICF identity max abs: {(details.enhanced - test_input).abs().max().item():.8g}")
+        print(f"initial baseline equivalence max abs: {(output - baseline_output).abs().max().item():.8g}")
+        print(f"final output shape: {tuple(output.shape)}")
+        return
     if hasattr(model, "pre_inr") and hasattr(model, "backbone"):
         input_channels = int(
             config["model"].get("in_channels", config["model"].get("img_channel"))
