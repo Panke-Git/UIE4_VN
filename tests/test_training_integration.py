@@ -47,7 +47,7 @@ def _disabled_scaler():
 
 
 def _model_config(version: str) -> dict:
-    if version in {"v4", "v5", "v6", "v7", "v8"}:
+    if version in {"v4", "v5", "v6", "v7", "v8", "v13", "v14"}:
         config = {
             "type": {
                 "v4": "plain_unet",
@@ -55,6 +55,8 @@ def _model_config(version: str) -> dict:
                 "v6": "plain_unet_glinr",
                 "v7": "plain_unet_pre_point_inr",
                 "v8": "plain_unet_pre_glinr",
+                "v13": "plain_unet_uicf_pre_backbone",
+                "v14": "plain_unet_uicf_parallel_branch",
             }[version],
             "in_channels": 3,
             "out_channels": 3,
@@ -85,6 +87,15 @@ def _model_config(version: str) -> dict:
                 "fusion_depth": 2,
                 "query_chunk": 64,
                 "residual": True,
+            }
+        elif version in {"v13", "v14"}:
+            config["uicf"] = {
+                "feat_dim": 48,
+                "num_frequencies": 8,
+                "mlp_hidden_dim": 128,
+                "mlp_hidden_layers": 3,
+                "anchor_hidden_dim": 64,
+                "query_chunk_size": 65536,
             }
         return config
     config = {
@@ -138,7 +149,10 @@ def _model_config(version: str) -> dict:
 
 @pytest.mark.parametrize(
     "version",
-    ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"),
+    (
+        "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10",
+        "v11", "v12", "v13", "v14",
+    ),
 )
 def test_one_epoch_synthetic_training_pipeline(tmp_path, version: str) -> None:
     dataset_module = importlib.import_module(f"src.{version}.dataset")

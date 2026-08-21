@@ -37,7 +37,13 @@ def main() -> None:
     total = parameter_count(model)
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     if hasattr(model, "uicf") and hasattr(model, "backbone"):
-        test_input = torch.rand(1, int(config["model"]["img_channel"]), args.height, args.width)
+        input_channels = int(
+            config["model"].get(
+                "in_channels",
+                config["model"].get("img_channel"),
+            )
+        )
+        test_input = torch.rand(1, input_channels, args.height, args.width)
         with torch.no_grad():
             output, details = model.forward_with_uicf_details(test_input)
             baseline_output = model.backbone(test_input)

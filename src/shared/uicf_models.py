@@ -1,4 +1,4 @@
-"""Exact V11/V12 topology wrappers around one canonical UICF-INR."""
+"""Backbone-agnostic UICF topology wrappers for the controlled experiments."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Literal
 from torch import Tensor, nn
 
 from src.v1.models.network import build_model as build_v1_model
+from src.v4.models.network import build_model as build_v4_model
 
 from .uicf_inr import UICFINROutput, UnderwaterImplicitCorrectionField
 
@@ -100,6 +101,49 @@ def build_uicf_experiment_model(
     backbone_config["type"] = "nafnet_small"
     # Construct the exact baseline first so equal seeds preserve v1 weights.
     backbone = build_v1_model(backbone_config)
+    uicf_config = config["uicf"]
+    uicf = UnderwaterImplicitCorrectionField(
+        feat_dim=int(uicf_config["feat_dim"]),
+        num_frequencies=int(uicf_config["num_frequencies"]),
+        mlp_hidden_dim=int(uicf_config["mlp_hidden_dim"]),
+        mlp_hidden_layers=int(uicf_config["mlp_hidden_layers"]),
+        anchor_hidden_dim=int(uicf_config["anchor_hidden_dim"]),
+        query_chunk_size=(
+            None
+            if uicf_config["query_chunk_size"] is None
+            else int(uicf_config["query_chunk_size"])
+        ),
+    )
+    return (
+        UICFPreBackbone(backbone, uicf)
+        if placement == "pre"
+        else UICFParallelBranch(backbone, uicf)
+    )
+
+
+def build_uicf_unet_experiment_model(
+    config: dict, *, expected_type: str, placement: Placement
+) -> nn.Module:
+    """Compose the unchanged v4 Plain U-Net with the canonical UICF.
+
+    The backbone is deliberately constructed first so a fixed seed produces
+    exactly the same Plain U-Net state as the standalone v4 builder.
+    """
+    if config.get("type") != expected_type:
+        raise ValueError(f"Expected model.type={expected_type}, got {config.get('type')!r}")
+    backbone_config = {
+        key: config[key]
+        for key in (
+            "in_channels",
+            "out_channels",
+            "base_channels",
+            "use_batch_norm",
+            "output_activation",
+        )
+    }
+    backbone_config["type"] = "plain_unet"
+    # Construct the exact baseline first so equal seeds preserve v4 weights.
+    backbone = build_v4_model(backbone_config)
     uicf_config = config["uicf"]
     uicf = UnderwaterImplicitCorrectionField(
         feat_dim=int(uicf_config["feat_dim"]),
