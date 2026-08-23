@@ -47,7 +47,9 @@ def _disabled_scaler():
 
 
 def _model_config(version: str) -> dict:
-    if version in {"v4", "v5", "v6", "v7", "v8", "v13", "v14"}:
+    if version in {
+        "v4", "v5", "v6", "v7", "v8", "v13", "v14", "v15", "v16", "v17"
+    }:
         config = {
             "type": {
                 "v4": "plain_unet",
@@ -57,6 +59,9 @@ def _model_config(version: str) -> dict:
                 "v8": "plain_unet_pre_glinr",
                 "v13": "plain_unet_uicf_pre_backbone",
                 "v14": "plain_unet_uicf_parallel_branch",
+                "v15": "plain_unet_color_query",
+                "v16": "plain_unet_color_query_uicf_pre_backbone",
+                "v17": "plain_unet_color_query_uicf_parallel_branch",
             }[version],
             "in_channels": 3,
             "out_channels": 3,
@@ -88,7 +93,15 @@ def _model_config(version: str) -> dict:
                 "query_chunk": 64,
                 "residual": True,
             }
-        elif version in {"v13", "v14"}:
+        if version in {"v15", "v16", "v17"}:
+            config["color_query"] = {
+                "num_color_queries": 8,
+                "token_dim": 32,
+                "num_heads": 4,
+                "ffn_expansion": 2.0,
+                "dropout": 0.0,
+            }
+        if version in {"v13", "v14", "v16", "v17"}:
             config["uicf"] = {
                 "feat_dim": 48,
                 "num_frequencies": 8,
@@ -151,7 +164,7 @@ def _model_config(version: str) -> dict:
     "version",
     (
         "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10",
-        "v11", "v12", "v13", "v14",
+        "v11", "v12", "v13", "v14", "v15", "v16", "v17",
     ),
 )
 def test_one_epoch_synthetic_training_pipeline(tmp_path, version: str) -> None:

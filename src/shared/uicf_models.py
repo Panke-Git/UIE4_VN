@@ -8,6 +8,7 @@ from torch import Tensor, nn
 
 from src.v1.models.network import build_model as build_v1_model
 from src.v4.models.network import build_model as build_v4_model
+from src.v15.models.network import build_model as build_v15_model
 
 from .uicf_inr import UICFINROutput, UnderwaterImplicitCorrectionField
 
@@ -144,6 +145,46 @@ def build_uicf_unet_experiment_model(
     backbone_config["type"] = "plain_unet"
     # Construct the exact baseline first so equal seeds preserve v4 weights.
     backbone = build_v4_model(backbone_config)
+    uicf_config = config["uicf"]
+    uicf = UnderwaterImplicitCorrectionField(
+        feat_dim=int(uicf_config["feat_dim"]),
+        num_frequencies=int(uicf_config["num_frequencies"]),
+        mlp_hidden_dim=int(uicf_config["mlp_hidden_dim"]),
+        mlp_hidden_layers=int(uicf_config["mlp_hidden_layers"]),
+        anchor_hidden_dim=int(uicf_config["anchor_hidden_dim"]),
+        query_chunk_size=(
+            None
+            if uicf_config["query_chunk_size"] is None
+            else int(uicf_config["query_chunk_size"])
+        ),
+    )
+    return (
+        UICFPreBackbone(backbone, uicf)
+        if placement == "pre"
+        else UICFParallelBranch(backbone, uicf)
+    )
+
+
+def build_uicf_color_query_unet_experiment_model(
+    config: dict, *, expected_type: str, placement: Placement
+) -> nn.Module:
+    """Compose the shared Color-Query V4 backbone with the unchanged canonical UICF."""
+    if config.get("type") != expected_type:
+        raise ValueError(f"Expected model.type={expected_type}, got {config.get('type')!r}")
+    backbone_config = {
+        key: config[key]
+        for key in (
+            "in_channels",
+            "out_channels",
+            "base_channels",
+            "use_batch_norm",
+            "output_activation",
+            "color_query",
+        )
+    }
+    backbone_config["type"] = "plain_unet_color_query"
+    # Construct the exact v15 backbone first so equal seeds preserve all CQ states.
+    backbone = build_v15_model(backbone_config)
     uicf_config = config["uicf"]
     uicf = UnderwaterImplicitCorrectionField(
         feat_dim=int(uicf_config["feat_dim"]),

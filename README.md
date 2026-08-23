@@ -1,6 +1,6 @@
 # UIE4_VN
 
-UIE4_VN is a self-contained, auditable LSUI underwater-image-enhancement research framework. Its fourteen versions study INR type, position, topology, and backbone under a fixed LSUI protocol.
+UIE4_VN is a self-contained, auditable LSUI underwater-image-enhancement research framework. Its seventeen versions study INR type, position, topology, backbone, and Color-Query decoder guidance under a fixed LSUI protocol.
 
 Versions v1-v6 preserve their original isolated implementations. The pre-INR variants v7-v10 use one thin shared composition wrapper and directly reuse the already-audited v1/v4 backbone and v2/v3 INR classes, so their mathematical implementations cannot drift.
 
@@ -27,6 +27,13 @@ Versions v1-v6 preserve their original isolated implementations. The pre-INR var
 | NAF encoder/decoder | v1 | v11 | v12 |
 | Plain U-Net | v4 | v13 | v14 |
 
+### Color-Query decoder × UICF
+
+| Decoder | No UICF | UICF Pre | UICF Parallel |
+|---|---|---|---|
+| Ordinary Plain U-Net | v4 | v13 | v14 |
+| Color-Query Plain U-Net | v15 | v16 | v17 |
+
 Within each matrix row, the ablation isolates the specified INR condition. v1-v3 use the same intro, NAF encoder stages, downsampling, decoder stages, upsampling, skip connections, ending convolution, and global image residual. Their only structural difference is `Identity` versus `Point-INR` versus `GL-INR`. The formal configurations intentionally set `middle_blk_num: 0`: there are no NAF middle blocks before or after the experimental bottleneck.
 
 v4-v6 use the exact same classic four-level Plain U-Net backbone with Conv-BatchNorm-ReLU DoubleConv blocks, max-pooling, transposed-convolution upsampling, concat skip connections, and a direct sigmoid RGB output. v5 applies the unchanged v2 Point-INR and v6 applies the unchanged v3 GL-INR to the 1024-channel U-Net bottleneck feature, directly before the first decoder upsampling. Both INR modules keep their internal residual; the composition adds no second outer residual. These versions use the same LSUI split and training/evaluation protocol to measure INR × backbone interaction. **They are controlled experiments, not additional proposed architectures.**
@@ -34,6 +41,10 @@ v4-v6 use the exact same classic four-level Plain U-Net backbone with Conv-Batch
 v7-v10 instead apply exactly one INR before the backbone: `RGB [B,3,H,W] -> INR(channels=3) -> unchanged backbone -> RGB`. v7/v8 use the v4 Plain U-Net; v9/v10 use the v1 NAF encoder/decoder with its identity bottleneck. No adapter, clamp, normalization, intermediate INR, or extra output activation is inserted. Zero-initialized INR correction layers make each pre-INR model initially identical to its corresponding baseline when backbone states match.
 
 v11-v14 use one canonical Underwater Implicit Correction-Field INR (UICF-INR). UICF predicts a full-resolution unconstrained field `R` and reconstructs exactly `I_uicf = I + R * (I - b)`. v11/v13 use the same pre-backbone topology: `NAFNet(I_uicf)` and `PlainUNet(I_uicf)`. v12/v14 use the same parameter-free parallel-correction topology: `Backbone(I) + (I_uicf - I)`. There is no concatenation, projection, attention, gate, alpha, fusion network, or model-forward clamp. The Plain U-Net variants directly reuse V4, including BatchNorm, sigmoid output, and pad/crop behavior. These are controlled UICF × backbone interaction experiments, not new U-Net designs. All four reduce exactly to their corresponding backbone baseline at initialization because the correction MLP output layer is zero-initialized.
+
+v15 retains the exact V4 encoder, bottleneck, transposed-convolution upsampling, concat skips, DoubleConv decoder blocks, Conv1x1 RGB head, and direct sigmoid prediction. A learnable eight-token base bank is refined deep-to-shallow through `E4→E3→E2→E1`; `T4/T3/T2/T1` then guide `D4/D3/D2/D1`, respectively, followed at each scale by a residual V4-style DoubleConv local refine. V15 has no UICF, INR, RGB preprocessing, or global image residual.
+
+v16 keeps the exact v13 UICF-pre topology and changes only its backbone to the shared Color-Query Plain U-Net: `PlainUNetColorQuery(UICF(I))`. v17 keeps the exact v14 parameter-free parallel topology and changes only its backbone: `PlainUNetColorQuery(I) + [UICF(I) - I]`. UICF does not initialize or condition Color Queries in either version: `T0` always remains the standalone learnable base token bank, with no UICF feature, global feature, correction field, gate, alpha, or fusion connection.
 
 Point-INR is a deliberately named feature-conditioned, absolute-coordinate baseline, not a claim of line-by-line reproduction of another INR paper. It concatenates each input feature vector with Fourier-encoded pixel-center coordinates, predicts a same-shaped residual with a chunked MLP, and adds it to the module input.
 
@@ -94,6 +105,9 @@ python -m src.v11.train --config configs/config_v11.yaml --seed 3520 --gpu 0
 python -m src.v12.train --config configs/config_v12.yaml --seed 3520 --gpu 1
 python -m src.v13.train --config configs/config_v13.yaml --seed 3520 --gpu 0
 python -m src.v14.train --config configs/config_v14.yaml --seed 3520 --gpu 1
+python -m src.v15.train --config configs/config_v15.yaml --seed 3520 --gpu 0
+python -m src.v16.train --config configs/config_v16.yaml --seed 3520 --gpu 0
+python -m src.v17.train --config configs/config_v17.yaml --seed 3520 --gpu 0
 
 python -m src.v3.train \
   --config configs/config_v3.yaml \
@@ -103,7 +117,7 @@ python -m src.v3.train \
   --name NAFEncDec_GLINR
 ```
 
-All train entry points support `--config`, `--seed`, `--gpu`, `--data-root`, `--name`, and `--resume`; the Plain U-Net-derived v4-v8 entry points additionally support a `--batch-size` override. CUDA is selected from the requested index rather than hard-coded. CPU is supported for smoke checks; CUDA AMP disables itself on CPU. `training.deterministic: true` enables deterministic PyTorch behavior with explicit warnings for unsupported operations.
+All train entry points support `--config`, `--seed`, `--gpu`, `--data-root`, `--name`, and `--resume`; the Plain U-Net-derived v4-v8 and v15 entry points additionally support a `--batch-size` override. CUDA is selected from the requested index rather than hard-coded. CPU is supported for smoke checks; CUDA AMP disables itself on CPU. `training.deterministic: true` enables deterministic PyTorch behavior with explicit warnings for unsupported operations.
 
 Training validates all train/validation files before optimization. It reads test metadata only to audit fixed counts/leakage and snapshot the protocol; it never creates a test Dataset, opens test images, or uses test performance for selection. `test.auto_run_after_training` remains false.
 
@@ -140,6 +154,9 @@ python -m src.v11.test --run-dir experiments/<v11_run> --checkpoint best_psnr --
 python -m src.v12.test --run-dir experiments/<v12_run> --checkpoint best_psnr --gpu 1
 python -m src.v13.test --run-dir experiments/<v13_run> --checkpoint best_psnr --gpu 0
 python -m src.v14.test --run-dir experiments/<v14_run> --checkpoint best_psnr --gpu 1
+python -m src.v15.test --run-dir experiments/<v15_run> --checkpoint best_psnr --gpu 0
+python -m src.v16.test --run-dir experiments/<v16_run> --checkpoint best_psnr --gpu 0
+python -m src.v17.test --run-dir experiments/<v17_run> --checkpoint best_psnr --gpu 0
 ```
 
 Checkpoint selectors are `best_psnr`, `best_ssim`, `best_loss`, and `last`; an explicit checkpoint path is also accepted. Test allows `--gpu` and `--data-root` overrides but no architecture override. Outputs include all enhanced PNGs, per-image metrics, a summary, ten deterministic sample images, their fixed index manifest, and a 10×3 `input | enhanced | GT` grid.
@@ -181,9 +198,12 @@ python tools/print_model_info.py --config configs/config_v11.yaml
 python tools/print_model_info.py --config configs/config_v12.yaml
 python tools/print_model_info.py --config configs/config_v13.yaml
 python tools/print_model_info.py --config configs/config_v14.yaml
+python tools/print_model_info.py --config configs/config_v15.yaml
+python tools/print_model_info.py --config configs/config_v16.yaml
+python tools/print_model_info.py --config configs/config_v17.yaml
 
 # Side-by-side completed or partial runs; missing test results print N/A
-python tools/compare_runs.py experiments/<v1_run> experiments/<v2_run> experiments/<v3_run> experiments/<v4_run> experiments/<v5_run> experiments/<v6_run> experiments/<v7_run> experiments/<v8_run> experiments/<v9_run> experiments/<v10_run> experiments/<v11_run> experiments/<v12_run> experiments/<v13_run> experiments/<v14_run>
+python tools/compare_runs.py experiments/<v1_run> experiments/<v2_run> experiments/<v3_run> experiments/<v4_run> experiments/<v5_run> experiments/<v6_run> experiments/<v7_run> experiments/<v8_run> experiments/<v9_run> experiments/<v10_run> experiments/<v11_run> experiments/<v12_run> experiments/<v13_run> experiments/<v14_run> experiments/<v15_run> experiments/<v16_run> experiments/<v17_run>
 
 # Full model-free LSUI split/difficulty/duplicate diagnostic
 python tools/diagnose_lsui.py --config configs/config_v1.yaml
@@ -229,6 +249,8 @@ v4-v6 instead use the standard Plain U-Net channel path `64→128→256→512→
 The v7-v10 pre-INR modules always receive and return three-channel tensors at the original input resolution. Point-INR therefore has the same 20,739 parameters in v7 and v9; GL-INR has the same 139,651 parameters in v8 and v10. Their residual outputs are passed directly into the backbone without clamping.
 
 UICF-INR has its own full-resolution 48-channel two-block image encoder, fixed eight-band periodic spatial encoding without a pi multiplier, global-average chromatic anchor `48→64→3→Sigmoid`, and a three-hidden-layer `128→128` per-pixel correction MLP. It has 137,734 parameters. Consequently v11/v12 each have 1,115,689 parameters, exactly 137,734 more than v1, while v13/v14 each have 31,175,497 parameters, exactly 137,734 more than the 31,037,763-parameter v4. Parallel variants add no fusion parameters. Dataset tensors already use RGB float `[0,1]`, so no UICF domain adapter is used. UICF and final model forward paths do not clamp outputs; the existing validation/test protocol still clamps a detached float prediction only for metrics and PNG output.
+
+The shared Color-Query V4 backbone uses eight learnable 128-dimensional base queries, four-head attention, 2x FFNs, and zero dropout. Feature projections are independent 1x1 convolutions, token refinement uses feature cross-attention followed by token self-attention and an FFN, and decoder guidance uses spatial pixels as queries with color tokens as keys/values. All attention paths use `need_weights=False`; encoder features are never pooled for attention. V15 has 38,740,483 parameters. V16/V17 each have 38,878,217 parameters, exactly one 137,734-parameter canonical UICF more than V15, and V17 adds no fusion parameters.
 
 Training uses synchronized paired 256×256 random crops, horizontal/vertical flips and 90-degree rotations. Small pairs are reflect-padded. Validation/test are deterministic and default to paired 256×256 bilinear resizing; set `evaluation.resize: false` for native-resolution evaluation. The same Charbonnier objective, AdamW settings, metric implementation, initialization, AMP behavior, and checkpoint protocol apply to every version.
 

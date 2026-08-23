@@ -20,6 +20,28 @@ def parameter_count(module: torch.nn.Module) -> int:
     return sum(parameter.numel() for parameter in module.parameters())
 
 
+def print_color_query_configuration(model: torch.nn.Module, model_config: dict) -> None:
+    color_query = model_config["color_query"]
+    print(f"base_channels: {model_config['base_channels']}")
+    print(f"num_color_queries: {color_query['num_color_queries']}")
+    print(f"token_dim: {color_query['token_dim']}")
+    print(f"num_heads: {color_query['num_heads']}")
+    print(f"base query shape: {tuple(model.base_queries.shape)}")
+
+
+def print_color_query_shapes(shapes: dict[str, tuple[int, ...]]) -> None:
+    print(f"input shape: {shapes['input']}")
+    for level in range(1, 5):
+        print(f"E{level} shape: {shapes[f'e{level}']}")
+    print(f"bottleneck shape: {shapes['bottleneck']}")
+    for token in ("t0", "t4", "t3", "t2", "t1"):
+        print(f"{token.upper()} shape: {shapes[token]}")
+    for level in range(4, 0, -1):
+        print(f"D{level} shape: {shapes[f'd{level}']}")
+    print(f"decoder output shape: {shapes['decoder_output']}")
+    print(f"final output shape: {shapes['final_output']}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -46,7 +68,13 @@ def main() -> None:
         test_input = torch.rand(1, input_channels, args.height, args.width)
         with torch.no_grad():
             output, details = model.forward_with_uicf_details(test_input)
-            baseline_output = model.backbone(test_input)
+            if hasattr(model.backbone, "base_queries"):
+                baseline_output, color_query_shapes = model.backbone.forward_with_shapes(
+                    test_input
+                )
+            else:
+                baseline_output = model.backbone(test_input)
+                color_query_shapes = None
         uicf_params = parameter_count(model.uicf)
         topology = type(model).__name__
         print(f"model: {config['experiment']['name']}")
@@ -54,6 +82,9 @@ def main() -> None:
         print(f"total params: {total}")
         print(f"trainable params: {trainable}")
         print(f"common backbone params: {parameter_count(model.backbone)}")
+        if color_query_shapes is not None:
+            print(f"CQ backbone params: {parameter_count(model.backbone)}")
+            print_color_query_configuration(model.backbone, config["model"])
         print(f"UICF-INR params: {uicf_params}")
         print(f"input shape: {tuple(test_input.shape)}")
         print(f"UICF enhanced shape: {tuple(details.enhanced.shape)}")
@@ -64,6 +95,25 @@ def main() -> None:
         print(f"initial UICF identity max abs: {(details.enhanced - test_input).abs().max().item():.8g}")
         print(f"initial baseline equivalence max abs: {(output - baseline_output).abs().max().item():.8g}")
         print(f"final output shape: {tuple(output.shape)}")
+        if color_query_shapes is not None:
+            print_color_query_shapes(color_query_shapes)
+        return
+    if hasattr(model, "base_queries") and hasattr(model, "token_refinement"):
+        test_input = torch.rand(
+            1, int(config["model"]["in_channels"]), args.height, args.width
+        )
+        with torch.no_grad():
+            output, shapes = model.forward_with_shapes(test_input)
+        print(f"model: {config['experiment']['name']}")
+        print("model family: Color-Query Plain U-Net")
+        print("structure: V4 encoder/bottleneck -> E4-to-E1 token refinement -> guided V4 decoder")
+        print("token initialization: learnable base query bank only")
+        print(f"output activation: {config['model']['output_activation']}")
+        print("global image residual: disabled")
+        print(f"total params: {total}")
+        print(f"trainable params: {trainable}")
+        print_color_query_configuration(model, config["model"])
+        print_color_query_shapes(shapes)
         return
     if hasattr(model, "pre_inr") and hasattr(model, "backbone"):
         input_channels = int(
