@@ -1,0 +1,29 @@
+UIEB PROTOCOL SUMMARY
+================================================================================
+Dataset root              : /root/autodl-tmp/pro/publicdata/UIEB19
+Output directory          : /root/autodl-tmp/pro/UIE4_workspace/UIE4_VN/split/uieb
+
+Protocol
+--------------------------------------------------------------------------------
+Total paired images       : 890
+Public T90 test images    : 90
+Public training pool      : 800
+Train                     : 720
+Validation                : 80
+Test                      : 90
+Validation split seed     : 3520
+
+Manifest SHA256
+--------------------------------------------------------------------------------
+train.tsv                 : da477b9cb5588aaa113c0eb4a37caffcf5c37f13887e199543fee0b14c0ee7e9
+validation.tsv            : e263cfe365939550042bf68b89a7b1fca7940b9fb5980199f8c4372099de563f
+test.tsv                  : 3693f31fdc849684706ad55f95e0c33e2b362082ced8346da033620856ffe07a
+
+T90 source
+--------------------------------------------------------------------------------
+https://github.com/ddz16/UIE_Benckmark/blob/main/data/UIEB/test.txt
+
+[OK] train / validation / test are mutually disjoint.
+[OK] test.tsv exactly matches the embedded public T90 list.
+[OK] all 890 local paired samples are used exactly once.
+[OK] no image was moved, copied, renamed, or modified.
