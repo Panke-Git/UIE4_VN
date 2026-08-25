@@ -103,10 +103,12 @@ def main(argv: list[str] | None = None) -> None:
 
     snapshot = run_dir / "split_snapshot"
     manifests = {name: snapshot / f"{name}.tsv" for name in ("train", "validation", "test")}
-    entries = validate_split_protocol(manifests)
+    entries = validate_split_protocol(
+        manifests, config["data"].get("expected_counts")
+    )
     data_root = Path(config["data"]["root"])
     if not data_root.is_dir():
-        raise FileNotFoundError(f"LSUI data.root is unavailable: {data_root}")
+        raise FileNotFoundError(f"data.root is unavailable: {data_root}")
     data = config["data"]
     test_dataset = LSUIDataset(
         manifests["test"], data_root, "test", int(data["patch_size"]), data["augmentation"],

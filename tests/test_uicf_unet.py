@@ -70,7 +70,15 @@ def test_v13_v14_configs_preserve_v4_protocol_and_v11_v12_uicf() -> None:
         "logging",
     ):
         assert v13[section] == v14[section] == v4[section]
-        assert v13[section] == v11[section] == v12[section]
+        if section == "data":
+            legacy_data = {
+                key: value
+                for key, value in v13[section].items()
+                if key not in {"dataset", "expected_counts"}
+            }
+            assert legacy_data == v11[section] == v12[section]
+        else:
+            assert v13[section] == v11[section] == v12[section]
 
     assert v13["experiment"] == {
         "version": "v13",
@@ -100,12 +108,18 @@ def test_v13_v14_configs_preserve_v4_protocol_and_v11_v12_uicf() -> None:
 
 def test_v13_v14_reuse_isolated_pipeline_and_one_canonical_uicf() -> None:
     for version, reference in (("v13", "v11"), ("v14", "v12")):
-        for filename in ("dataset.py", "engine.py", "experiment.py", "losses.py", "metrics.py", "utils.py"):
+        for filename in ("engine.py", "experiment.py", "losses.py", "metrics.py", "utils.py"):
             assert (ROOT / "src" / version / filename).read_bytes() == (
                 ROOT / "src" / reference / filename
             ).read_bytes()
         assert not (ROOT / "src" / version / "models" / "unet.py").exists()
         assert not (ROOT / "src" / version / "models" / "uicf_inr.py").exists()
+    assert (ROOT / "src/v13/dataset.py").read_bytes() == (
+        ROOT / "src/v14/dataset.py"
+    ).read_bytes()
+    assert (ROOT / "src/v11/dataset.py").read_bytes() == (
+        ROOT / "src/v12/dataset.py"
+    ).read_bytes()
 
     v11 = importlib.import_module("src.v11.models").UnderwaterImplicitCorrectionField
     v12 = importlib.import_module("src.v12.models").UnderwaterImplicitCorrectionField

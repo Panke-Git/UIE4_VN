@@ -60,11 +60,19 @@ def test_v4_training_protocol_matches_current_uie4_protocol() -> None:
         "data", "loss", "optimizer", "scheduler", "training", "checkpoint",
         "evaluation", "metrics", "test", "logging",
     ):
-        assert v4[section] == v1[section]
+        if section == "data":
+            v4_data = {
+                key: value
+                for key, value in v4[section].items()
+                if key not in {"dataset", "expected_counts"}
+            }
+            assert v4_data == v1[section]
+        else:
+            assert v4[section] == v1[section]
 
 
 def test_v4_protocol_code_is_copied_but_version_is_import_isolated() -> None:
-    for filename in ("dataset.py", "engine.py", "experiment.py", "losses.py", "metrics.py"):
+    for filename in ("engine.py", "experiment.py", "losses.py", "metrics.py"):
         assert (ROOT / "src/v4" / filename).read_bytes() == (ROOT / "src/v1" / filename).read_bytes()
     for path in (ROOT / "src/v4").rglob("*.py"):
         source = path.read_text(encoding="utf-8")

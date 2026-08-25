@@ -73,7 +73,15 @@ def test_pre_inr_configs_preserve_their_baseline_protocols() -> None:
         "logging",
     )
     for section in protocol_sections:
-        assert configs["v7"][section] == configs["v8"][section] == v4[section]
+        if section == "data":
+            v4_data = {
+                key: value
+                for key, value in v4[section].items()
+                if key not in {"dataset", "expected_counts"}
+            }
+            assert configs["v7"][section] == configs["v8"][section] == v4_data
+        else:
+            assert configs["v7"][section] == configs["v8"][section] == v4[section]
         assert configs["v9"][section] == configs["v10"][section] == v1[section]
 
     unet_keys = ("in_channels", "out_channels", "base_channels", "use_batch_norm", "output_activation")
@@ -131,8 +139,9 @@ def test_protocol_implementation_matches_the_requested_baseline() -> None:
     protocol_files = ("dataset.py", "engine.py", "experiment.py", "losses.py", "metrics.py", "utils.py")
     for version, baseline in (("v7", "v4"), ("v8", "v4"), ("v9", "v1"), ("v10", "v1")):
         for filename in protocol_files:
+            reference = "v1" if filename == "dataset.py" else baseline
             assert (ROOT / "src" / version / filename).read_bytes() == (
-                ROOT / "src" / baseline / filename
+                ROOT / "src" / reference / filename
             ).read_bytes()
 
 

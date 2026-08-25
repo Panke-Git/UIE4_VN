@@ -118,7 +118,9 @@ def main(argv: list[str] | None = None) -> None:
             "validation": manifest_path(config["data"]["validation_manifest"]),
             "test": manifest_path(config["data"]["test_manifest"]),
         }
-        entries = validate_split_protocol(manifests)
+        entries = validate_split_protocol(
+            manifests, config["data"].get("expected_counts")
+        )
         model = build_model(config["model"]).to(device)
 
         if resume_path is None:
@@ -156,7 +158,7 @@ def main(argv: list[str] | None = None) -> None:
         data_root = Path(config["data"]["root"])
         if not data_root.is_dir():
             raise FileNotFoundError(
-                f"LSUI data.root is unavailable: {data_root}. Manifests were validated; set --data-root on the data server."
+                f"data.root is unavailable: {data_root}. Manifests were validated; set --data-root on the data server."
             )
         data = config["data"]
         train_dataset = LSUIDataset(

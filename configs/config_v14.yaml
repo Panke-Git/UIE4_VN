@@ -5,10 +5,15 @@ experiment:
   output_root: experiments
 
 data:
+  dataset: LSUI19
   root: /root/autodl-tmp/pro/publicdata/LSUI19_dup_train
   train_manifest: split/lsui19/train.tsv
   validation_manifest: split/lsui19/validation.tsv
   test_manifest: split/lsui19/test.tsv
+  expected_counts:
+    train: 3466
+    validation: 385
+    test: 428
   patch_size: 256
   batch_size: 16
   num_workers: 4

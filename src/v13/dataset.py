@@ -60,15 +60,20 @@ def entry_identity(entry: ManifestEntry) -> tuple[str, str, str]:
     return entry.sample_id, entry.input_relative, entry.gt_relative
 
 
-def validate_split_protocol(manifests: dict[str, Path]) -> dict[str, list[ManifestEntry]]:
-    """Enforce fixed counts, uniqueness by every identity field, and zero leakage."""
+def validate_split_protocol(
+    manifests: dict[str, Path],
+    expected_counts: dict[str, int] | None = None,
+) -> dict[str, list[ManifestEntry]]:
+    """Enforce configured counts, uniqueness by every identity field, and zero leakage."""
     parsed = {name: read_manifest(path) for name, path in manifests.items()}
-    expected = {"train": 3466, "validation": 385, "test": 428}
-    for split, count in expected.items():
-        if len(parsed[split]) != count:
-            raise ValueError(f"{split} count is {len(parsed[split])}, expected {count}")
-    if len(parsed["train"]) + len(parsed["validation"]) != 3851:
-        raise ValueError("train + validation must equal 3851")
+    if expected_counts is not None:
+        for split in ("train", "validation", "test"):
+            if split not in expected_counts:
+                raise ValueError(f"Missing expected count for split: {split}")
+            expected = int(expected_counts[split])
+            actual = len(parsed[split])
+            if actual != expected:
+                raise ValueError(f"{split} count is {actual}, expected {expected}")
 
     fields = ("sample_id", "input_relative", "gt_relative")
     for split, entries in parsed.items():

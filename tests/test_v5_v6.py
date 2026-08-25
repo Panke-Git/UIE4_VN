@@ -50,7 +50,15 @@ def test_v5_v6_formal_configs_are_strict_controlled_variants() -> None:
         "logging",
     )
     for section in protocol_sections:
-        assert v4[section] == v5[section] == v6[section]
+        if section == "data":
+            v4_data = {
+                key: value
+                for key, value in v4[section].items()
+                if key not in {"dataset", "expected_counts"}
+            }
+            assert v4_data == v5[section] == v6[section]
+        else:
+            assert v4[section] == v5[section] == v6[section]
 
     common_model = (
         "in_channels",
@@ -91,7 +99,7 @@ def test_backbone_and_inr_sources_are_byte_identical_to_their_controls() -> None
 
 
 def test_v5_v6_are_import_isolated_and_protocol_code_matches_v4() -> None:
-    protocol_files = ("dataset.py", "engine.py", "experiment.py", "losses.py", "metrics.py", "utils.py")
+    protocol_files = ("engine.py", "experiment.py", "losses.py", "metrics.py", "utils.py")
     for version in ("v5", "v6"):
         for filename in protocol_files:
             assert (ROOT / "src" / version / filename).read_bytes() == (
@@ -100,6 +108,9 @@ def test_v5_v6_are_import_isolated_and_protocol_code_matches_v4() -> None:
         for path in (ROOT / "src" / version).rglob("*.py"):
             source = path.read_text(encoding="utf-8")
             assert not any(f"src.v{other}" in source for other in range(1, 7) if f"v{other}" != version)
+    assert (ROOT / "src/v5/dataset.py").read_bytes() == (
+        ROOT / "src/v6/dataset.py"
+    ).read_bytes() == (ROOT / "src/v1/dataset.py").read_bytes()
 
 
 def test_formal_builders_create_only_the_requested_inr() -> None:

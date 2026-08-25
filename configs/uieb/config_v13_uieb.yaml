@@ -1,19 +1,19 @@
 experiment:
-  version: v17
-  name: PlainUNet_ColorQuery_UICF_ParallelBranch
+  version: v13
+  name: PlainUNet_UICF_PreBackbone_UIEB_T90
   seed: 3520
   output_root: experiments
 
 data:
-  dataset: LSUI19
-  root: /root/autodl-tmp/pro/publicdata/LSUI19_dup_train
-  train_manifest: split/lsui19/train.tsv
-  validation_manifest: split/lsui19/validation.tsv
-  test_manifest: split/lsui19/test.tsv
+  dataset: UIEB
+  root: /root/autodl-tmp/pro/publicdata/UIEB19
+  train_manifest: split/uieb/train.tsv
+  validation_manifest: split/uieb/validation.tsv
+  test_manifest: split/uieb/test.tsv
   expected_counts:
-    train: 3466
-    validation: 385
-    test: 428
+    train: 720
+    validation: 80
+    test: 90
   patch_size: 256
   batch_size: 16
   num_workers: 4
@@ -26,18 +26,12 @@ data:
     rot90: true
 
 model:
-  type: plain_unet_color_query_uicf_parallel_branch
+  type: plain_unet_uicf_pre_backbone
   in_channels: 3
   out_channels: 3
   base_channels: 64
   use_batch_norm: true
   output_activation: sigmoid
-  color_query:
-    num_color_queries: 8
-    token_dim: 128
-    num_heads: 4
-    ffn_expansion: 2.0
-    dropout: 0.0
   uicf:
     feat_dim: 48
     num_frequencies: 8
