@@ -1,3 +1,4 @@
+import csv
 import importlib
 import json
 import logging
@@ -176,7 +177,7 @@ def test_one_epoch_synthetic_training_pipeline(tmp_path, version: str) -> None:
 
     data_root = tmp_path / "data"
     train_manifest = _write_pairs(data_root, "train", ["0", "1", "2", "3"])
-    validation_manifest = _write_pairs(data_root, "validation", ["10", "11"])
+    validation_manifest = _write_pairs(data_root, "validation", ["10", "11", "12"])
     augmentation = {"hflip": True, "vflip": True, "rot90": True}
     evaluation = {"resize": True, "size": 32}
     train_dataset = dataset_module.LSUIDataset(
@@ -291,6 +292,16 @@ def test_one_epoch_synthetic_training_pipeline(tmp_path, version: str) -> None:
     assert (run_dir / "result" / "validation_summary.json").is_file()
     history = json.loads((run_dir / "log" / "metrics_history.json").read_text())
     validation = json.loads((run_dir / "result" / "validation_summary.json").read_text())
+    with (run_dir / "result" / "validation_metrics.csv").open(
+        encoding="utf-8", newline=""
+    ) as handle:
+        validation_rows = list(csv.DictReader(handle))
     assert len(history["epochs"]) == 1
+    assert history["epochs"][0]["val_e00"] >= 0.0
     assert validation["epoch"] == 1
-    assert validation["sample_count"] == 2
+    assert validation["sample_count"] == 3
+    assert validation["mean_e00"] == pytest.approx(
+        sum(float(row["e00"]) for row in validation_rows) / len(validation_rows)
+    )
+    assert len(validation_rows) == 3
+    assert list(validation_rows[0]) == ["filename", "sample_id", "psnr", "ssim", "e00"]

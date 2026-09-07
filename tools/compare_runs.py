@@ -24,7 +24,8 @@ def main() -> None:
     args = parser.parse_args()
     columns = [
         "run", "version", "name", "seed", "best_val_loss", "best_val_psnr",
-        "best_val_ssim", "test_psnr", "test_ssim", "total_params", "trainable_params",
+        "best_val_ssim", "test_psnr", "test_ssim", "test_e00", "total_params",
+        "trainable_params",
     ]
     print("\t".join(columns))
     for raw in args.run_dirs:
@@ -36,7 +37,7 @@ def main() -> None:
             run.name,
             value(info, "version"), value(info, "experiment_name"), value(info, "seed"),
             value(status, "best_val_loss"), value(status, "best_psnr"), value(status, "best_ssim"),
-            value(test, "mean_psnr"), value(test, "mean_ssim"),
+            value(test, "mean_psnr"), value(test, "mean_ssim"), value(test, "mean_e00"),
             value(info, "model_total_params"), value(info, "model_trainable_params"),
         ]
         print("\t".join(row))
@@ -44,4 +45,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

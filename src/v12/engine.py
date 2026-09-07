@@ -15,6 +15,8 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from src.shared.e00 import batch_delta_e00
+
 from .experiment import update_status
 from .metrics import batch_metrics
 from .utils import atomic_json, rng_state
@@ -29,6 +31,7 @@ def _write_history(run_dir: Path, history: list[dict[str, Any]]) -> None:
         "val_loss",
         "val_psnr",
         "val_ssim",
+        "val_e00",
         "epoch_time_seconds",
     ]
     with (run_dir / "log" / "metrics_history.csv").open("w", encoding="utf-8", newline="") as handle:
@@ -80,6 +83,7 @@ def _save_best(
             "val_loss": metrics["loss"],
             "psnr": metrics["psnr"],
             "ssim": metrics["ssim"],
+            "e00": metrics["e00"],
             "learning_rate": learning_rate,
             "checkpoint": filename,
             "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -102,6 +106,7 @@ def validate(
     sample_count = 0
     psnr_values: list[float] = []
     ssim_values: list[float] = []
+    e00_values: list[float] = []
     rows: list[dict[str, Any]] = []
     amp_enabled = bool(config["training"]["amp"]) and device.type == "cuda"
     for batch in loader:
@@ -114,33 +119,50 @@ def validate(
             raise FloatingPointError(f"Non-finite validation output/loss at epoch={epoch} ids={batch['id']}")
         clipped = prediction.float().clamp(0.0, 1.0)
         psnr, ssim = batch_metrics(clipped, targets.float(), config["metrics"])
+        e00 = batch_delta_e00(clipped, targets.float(), config["metrics"])
         batch_size = inputs.shape[0]
         loss_total += float(loss) * batch_size
         sample_count += batch_size
         for index in range(batch_size):
-            psnr_value, ssim_value = float(psnr[index]), float(ssim[index])
+            psnr_value, ssim_value, e00_value = (
+                float(psnr[index]),
+                float(ssim[index]),
+                float(e00[index]),
+            )
             psnr_values.append(psnr_value)
             ssim_values.append(ssim_value)
+            e00_values.append(e00_value)
             rows.append(
                 {
                     "filename": batch["filename"][index],
                     "sample_id": batch["id"][index],
                     "psnr": psnr_value,
                     "ssim": ssim_value,
+                    "e00": e00_value,
                 }
             )
     metrics = {
         "loss": loss_total / sample_count,
         "psnr": sum(psnr_values) / len(psnr_values),
         "ssim": sum(ssim_values) / len(ssim_values),
+        "e00": sum(e00_values) / len(e00_values),
     }
     with (run_dir / "result" / "validation_metrics.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["filename", "sample_id", "psnr", "ssim"])
+        writer = csv.DictWriter(
+            handle, fieldnames=["filename", "sample_id", "psnr", "ssim", "e00"]
+        )
         writer.writeheader()
         writer.writerows(rows)
     atomic_json(
         run_dir / "result" / "validation_summary.json",
-        {"epoch": epoch, "sample_count": sample_count, "mean_loss": metrics["loss"], "mean_psnr": metrics["psnr"], "mean_ssim": metrics["ssim"]},
+        {
+            "epoch": epoch,
+            "sample_count": sample_count,
+            "mean_loss": metrics["loss"],
+            "mean_psnr": metrics["psnr"],
+            "mean_ssim": metrics["ssim"],
+            "mean_e00": metrics["e00"],
+        },
     )
     return metrics
 
@@ -205,12 +227,18 @@ def train_model(
                 logger.info("epoch=%d step=%d train_loss=%.6f", epoch, step, float(loss))
 
         train_loss = train_loss_total / train_samples
-        val_metrics = {"loss": math.nan, "psnr": math.nan, "ssim": math.nan}
+        val_metrics = {
+            "loss": math.nan,
+            "psnr": math.nan,
+            "ssim": math.nan,
+            "e00": math.nan,
+        }
         if epoch % int(config["training"]["validate_every"]) == 0:
             val_metrics = validate(model, validation_loader, criterion, device, config, run_dir, epoch)
             validation_logger.info(
-                "epoch=%d val_loss=%.8f val_psnr=%.6f val_ssim=%.6f",
+                "epoch=%d val_loss=%.8f val_psnr=%.6f val_ssim=%.6f val_e00=%.6f",
                 epoch, val_metrics["loss"], val_metrics["psnr"], val_metrics["ssim"],
+                val_metrics["e00"],
             )
             improved_loss = val_metrics["loss"] < best["val_loss"]
             improved_psnr = val_metrics["psnr"] > best["psnr"]
@@ -254,6 +282,7 @@ def train_model(
             "val_loss": val_metrics["loss"],
             "val_psnr": val_metrics["psnr"],
             "val_ssim": val_metrics["ssim"],
+            "val_e00": val_metrics["e00"],
             "epoch_time_seconds": epoch_seconds,
         }
         history.append(record)
@@ -268,8 +297,9 @@ def train_model(
             best_val_loss=best["val_loss"],
         )
         logger.info(
-            "[%s][Epoch %03d/%03d] lr=%.6e train_loss=%.6f val_loss=%.6f val_psnr=%.4f val_ssim=%.4f time=%.1fs",
+            "[%s][Epoch %03d/%03d] lr=%.6e train_loss=%.6f val_loss=%.6f "
+            "val_psnr=%.4f val_ssim=%.4f val_e00=%.4f time=%.1fs",
             version, epoch, epochs, learning_rate, train_loss, val_metrics["loss"],
-            val_metrics["psnr"], val_metrics["ssim"], epoch_seconds,
+            val_metrics["psnr"], val_metrics["ssim"], val_metrics["e00"], epoch_seconds,
         )
     return best, status

@@ -13,6 +13,8 @@ from PIL import Image, ImageDraw
 import torch
 from torch.utils.data import DataLoader
 
+from src.shared.e00 import batch_delta_e00, e00_protocol
+
 from .dataset import LSUIDataset, validate_split_protocol
 from .metrics import batch_metrics
 from .models import build_model
@@ -145,6 +147,7 @@ def main(argv: list[str] | None = None) -> None:
     selected_images: dict[int, dict[str, Any]] = {}
     rows: list[dict[str, Any]] = []
     inference_seconds = 0.0
+    e00_seconds = 0.0
     total_start = time.perf_counter()
     used_names: set[str] = set()
     amp_enabled = bool(config["training"]["amp"]) and device.type == "cuda"
@@ -163,6 +166,9 @@ def main(argv: list[str] | None = None) -> None:
             raise FloatingPointError(f"Non-finite test output sample_id={batch['id'][0]}")
         prediction = prediction.float().clamp(0.0, 1.0)
         psnr, ssim = batch_metrics(prediction, targets.float(), config["metrics"])
+        e00_start = time.perf_counter()
+        e00 = batch_delta_e00(prediction, targets.float(), config["metrics"])
+        e00_seconds += time.perf_counter() - e00_start
         filename = batch["filename"][0]
         stem = Path(filename).stem
         output_name = f"{stem}_enhanced.png"
@@ -172,7 +178,15 @@ def main(argv: list[str] | None = None) -> None:
         enhanced_image = tensor_to_image(prediction[0])
         if bool(config["test"]["save_all_enhanced_images"]):
             enhanced_image.save(enhanced_dir / output_name)
-        rows.append({"filename": filename, "sample_id": batch["id"][0], "psnr": float(psnr[0]), "ssim": float(ssim[0])})
+        rows.append(
+            {
+                "filename": filename,
+                "sample_id": batch["id"][0],
+                "psnr": float(psnr[0]),
+                "ssim": float(ssim[0]),
+                "e00": float(e00[0]),
+            }
+        )
         if index in selected_set:
             enhanced_image.save(samples_dir / output_name)
             selected_images[index] = {
@@ -186,11 +200,14 @@ def main(argv: list[str] | None = None) -> None:
 
     total_seconds = time.perf_counter() - total_start
     with (result_dir / "test_metrics.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["filename", "sample_id", "psnr", "ssim"])
+        writer = csv.DictWriter(
+            handle, fieldnames=["filename", "sample_id", "psnr", "ssim", "e00"]
+        )
         writer.writeheader()
         writer.writerows(rows)
     mean_psnr = sum(row["psnr"] for row in rows) / len(rows)
     mean_ssim = sum(row["ssim"] for row in rows) / len(rows)
+    mean_e00 = sum(row["e00"] for row in rows) / len(rows)
     atomic_json(
         result_dir / "test_summary.json",
         {
@@ -199,8 +216,12 @@ def main(argv: list[str] | None = None) -> None:
             "sample_count": len(rows),
             "mean_psnr": mean_psnr,
             "mean_ssim": mean_ssim,
+            "mean_e00": mean_e00,
+            "e00_protocol": e00_protocol(config["metrics"]),
             "total_test_time_seconds": total_seconds,
             "average_inference_time_seconds": inference_seconds / len(rows),
+            "total_e00_time_seconds": e00_seconds,
+            "average_e00_time_seconds": e00_seconds / len(rows),
         },
     )
     selected_ordered = [selected_images[index] for index in selected_indices]
@@ -221,8 +242,9 @@ def main(argv: list[str] | None = None) -> None:
             visualization,
         )
     logger.info(
-        "test completed checkpoint_epoch=%d samples=%d mean_psnr=%.4f mean_ssim=%.4f",
-        int(checkpoint["epoch"]), len(rows), mean_psnr, mean_ssim,
+        "test completed checkpoint_epoch=%d samples=%d mean_psnr=%.4f "
+        "mean_ssim=%.4f mean_e00=%.4f",
+        int(checkpoint["epoch"]), len(rows), mean_psnr, mean_ssim, mean_e00,
     )
 
 

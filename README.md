@@ -84,7 +84,7 @@ python tools/validate_splits.py
 python -m pytest -q
 ```
 
-The repository does not depend on BasicSR, torchvision model implementations, PyTorch Lightning, Hydra, or an external experiment tracker.
+The repository does not depend on BasicSR, torchvision model implementations, PyTorch Lightning, Hydra, or an external experiment tracker. CIEDE2000 evaluation uses `scikit-image>=0.25,<0.26`; the metric implementation has been verified with scikit-image 0.25.2.
 
 ## Train
 
@@ -135,7 +135,7 @@ The saved resolved architecture and version must match. A changed server dataset
 
 ## Validation and held-out test
 
-Validation runs at `training.validate_every`, computes Charbonnier loss, float-RGB PSNR, and Gaussian-window float-RGB SSIM before PNG quantization, and writes the latest per-image CSV/summary. Independent best checkpoints are maintained for validation loss, PSNR, and SSIM.
+Validation runs at `training.validate_every`, computes Charbonnier loss, float-RGB PSNR, Gaussian-window float-RGB SSIM, and ΔE00 before PNG quantization, and writes the latest per-image CSV/summary. ΔE00 is CIEDE2000 color difference and **lower is better**. Independent best checkpoints are maintained only for validation loss, PSNR, and SSIM; there is intentionally no `best_e00` checkpoint.
 
 Held-out testing is always explicit and reconstructs the model from the run's `config_resolved.yaml`. It uses the run's split snapshot, so later edits to repository manifests cannot silently change an old experiment.
 
@@ -161,6 +161,44 @@ python -m src.v17.test --run-dir experiments/<v17_run> --checkpoint best_psnr --
 
 Checkpoint selectors are `best_psnr`, `best_ssim`, `best_loss`, and `last`; an explicit checkpoint path is also accepted. Test allows `--gpu` and `--data-root` overrides but no architecture override. Outputs include all enhanced PNGs, per-image metrics, a summary, ten deterministic sample images, their fixed index manifest, and a 10×3 `input | enhanced | GT` grid.
 
+### ΔE00 evaluation and legacy-run recomputation
+
+Validation and test use one shared implementation in `src/shared/e00.py`. The already-clamped float prediction and paired GT are cropped once with the same `metrics.crop_border` used by PSNR/SSIM, explicitly converted from BCHW to BHWC, interpreted as sRGB, and converted to CIE Lab with D65 illumination and the 2° observer. `skimage.color.deltaE_ciede2000` runs with `kL=kC=kH=1`. Per-pixel ΔE00 is averaged spatially for each image, then per-image values are averaged with equal image weight. Color conversion and color difference run outside autocast in CPU float64 and use the model prediction before PNG encoding.
+
+The additional fields are:
+
+- `result/validation_metrics.csv`: `e00`
+- `result/validation_summary.json`: `mean_e00`
+- `log/metrics_history.csv` and `.json`: `val_e00`
+- `result/test_metrics.csv`: `e00`
+- `result/test_summary.json`: `mean_e00`, `e00_protocol`, and separate E00 timing
+
+Old `config_resolved.yaml` files need no edits because there is no required E00 config section. Existing checkpoint state dictionaries and selectors are unchanged, so an old best checkpoint can be tested again without retraining. A test rerun rewrites the existing result CSV/summary and deterministic visualization metadata/images, and appends to `log/test.log`. Back up the old result and test log first when they must be preserved:
+
+```bash
+cp -a experiments/<run>/result experiments/<run>/result_before_e00
+cp -a experiments/<run>/log/test.log experiments/<run>/log/test_before_e00.log
+```
+
+Recompute ΔE00 from the original `best_psnr` checkpoints for the primary six versions:
+
+```bash
+python -m src.v4.test  --run-dir experiments/<v4_run>  --checkpoint best_psnr --gpu 0
+python -m src.v13.test --run-dir experiments/<v13_run> --checkpoint best_psnr --gpu 0
+python -m src.v14.test --run-dir experiments/<v14_run> --checkpoint best_psnr --gpu 0
+python -m src.v15.test --run-dir experiments/<v15_run> --checkpoint best_psnr --gpu 0
+python -m src.v16.test --run-dir experiments/<v16_run> --checkpoint best_psnr --gpu 0
+python -m src.v17.test --run-dir experiments/<v17_run> --checkpoint best_psnr --gpu 0
+```
+
+Summarize the refreshed results; old summaries without `mean_e00` display `N/A`:
+
+```bash
+python tools/compare_runs.py \
+  experiments/<v4_run> experiments/<v13_run> experiments/<v14_run> \
+  experiments/<v15_run> experiments/<v16_run> experiments/<v17_run>
+```
+
 ## Experiment artifacts
 
 New runs use `{version}_{name}_seed{seed}_{YYYYMMDD_HHMMSS}` beneath `experiments/` and contain:
@@ -169,7 +207,7 @@ New runs use `{version}_{name}_seed{seed}_{YYYYMMDD_HHMMSS}` beneath `experiment
 best/                 best_loss/psnr/ssim .pt and .json
 checkpoint/           periodic epoch files and last.pt
 log/                  train/val/test logs and JSON/CSV history
-result/               validation and explicit-test metrics/images/grid
+result/               validation and explicit-test PSNR/SSIM/E00 metrics, images, and grid
 split_snapshot/       exact manifests plus hashes in run_info.json
 config_source.yaml    input YAML before CLI overrides
 config_resolved.yaml  exact effective YAML
@@ -202,7 +240,7 @@ python tools/print_model_info.py --config configs/config_v15.yaml
 python tools/print_model_info.py --config configs/config_v16.yaml
 python tools/print_model_info.py --config configs/config_v17.yaml
 
-# Side-by-side completed or partial runs; missing test results print N/A
+# Side-by-side completed or partial runs; includes test_e00, with missing values as N/A
 python tools/compare_runs.py experiments/<v1_run> experiments/<v2_run> experiments/<v3_run> experiments/<v4_run> experiments/<v5_run> experiments/<v6_run> experiments/<v7_run> experiments/<v8_run> experiments/<v9_run> experiments/<v10_run> experiments/<v11_run> experiments/<v12_run> experiments/<v13_run> experiments/<v14_run> experiments/<v15_run> experiments/<v16_run> experiments/<v17_run>
 
 # Full model-free LSUI split/difficulty/duplicate diagnostic
@@ -252,7 +290,7 @@ UICF-INR has its own full-resolution 48-channel two-block image encoder, fixed e
 
 The shared Color-Query V4 backbone uses eight learnable 128-dimensional base queries, four-head attention, 2x FFNs, and zero dropout. Feature projections are independent 1x1 convolutions, token refinement uses feature cross-attention followed by token self-attention and an FFN, and decoder guidance uses spatial pixels as queries with color tokens as keys/values. All attention paths use `need_weights=False`; encoder features are never pooled for attention. V15 has 38,740,483 parameters. V16/V17 each have 38,878,217 parameters, exactly one 137,734-parameter canonical UICF more than V15, and V17 adds no fusion parameters.
 
-Training uses synchronized paired 256×256 random crops, horizontal/vertical flips and 90-degree rotations. Small pairs are reflect-padded. Validation/test are deterministic and default to paired 256×256 bilinear resizing; set `evaluation.resize: false` for native-resolution evaluation. The same Charbonnier objective, AdamW settings, metric implementation, initialization, AMP behavior, and checkpoint protocol apply to every version.
+Training uses synchronized paired 256×256 random crops, horizontal/vertical flips and 90-degree rotations. Small pairs are reflect-padded. Validation/test are deterministic and default to paired 256×256 bilinear resizing; set `evaluation.resize: false` for native-resolution evaluation. The same Charbonnier objective, AdamW settings, PSNR/SSIM/ΔE00 metric implementations, initialization, AMP behavior, and checkpoint protocol apply to every version. ΔE00 is evaluation-only and is never part of the training loss or checkpoint-selection criterion.
 
 Point/GL queries are chunked by `query_chunk` to bound MLP query memory. This limits the implicit-query intermediates, not the convolutional backbone activation memory.
 
