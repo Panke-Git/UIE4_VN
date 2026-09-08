@@ -10,11 +10,12 @@ from src.v1.models.network import build_model as build_v1_model
 from src.v4.models.network import build_model as build_v4_model
 from src.v15.models.network import build_model as build_v15_model
 
+from .uicf_controls import ConvolutionalCorrectionField
 from .uicf_inr import UICFINROutput, UnderwaterImplicitCorrectionField
 
 
 class UICFPreBackbone(nn.Module):
-    def __init__(self, backbone: nn.Module, uicf: UnderwaterImplicitCorrectionField) -> None:
+    def __init__(self, backbone: nn.Module, uicf: nn.Module) -> None:
         super().__init__()
         self.backbone = backbone
         self.uicf = uicf
@@ -44,7 +45,7 @@ class UICFPreBackbone(nn.Module):
 
 
 class UICFParallelBranch(nn.Module):
-    def __init__(self, backbone: nn.Module, uicf: UnderwaterImplicitCorrectionField) -> None:
+    def __init__(self, backbone: nn.Module, uicf: nn.Module) -> None:
         super().__init__()
         self.backbone = backbone
         self.uicf = uicf
@@ -84,6 +85,43 @@ class UICFParallelBranch(nn.Module):
 Placement = Literal["pre", "parallel"]
 
 
+def _build_correction_module(config: dict) -> nn.Module:
+    """Build the requested field variant while keeping legacy defaults exact."""
+
+    variant = str(config.get("field_variant", "implicit")).strip()
+    common = {
+        "feat_dim": int(config["feat_dim"]),
+        "anchor_hidden_dim": int(config["anchor_hidden_dim"]),
+        "use_global_field_conditioning": bool(
+            config.get("use_global_field_conditioning", True)
+        ),
+        "use_learned_anchor": bool(config.get("use_learned_anchor", True)),
+    }
+    if variant in {"implicit", "implicit_inr"}:
+        return UnderwaterImplicitCorrectionField(
+            **common,
+            num_frequencies=int(config["num_frequencies"]),
+            mlp_hidden_dim=int(config["mlp_hidden_dim"]),
+            mlp_hidden_layers=int(config["mlp_hidden_layers"]),
+            query_chunk_size=(
+                None
+                if config["query_chunk_size"] is None
+                else int(config["query_chunk_size"])
+            ),
+            use_spatial_conditioning=bool(config.get("use_spatial_conditioning", True)),
+        )
+    if variant == "conv_control":
+        return ConvolutionalCorrectionField(
+            **common,
+            conv_hidden_dim=int(config.get("conv_hidden_dim", 33)),
+            conv_hidden_layers=int(config.get("conv_hidden_layers", 3)),
+        )
+    raise ValueError(
+        "uicf.field_variant must be 'implicit' or 'conv_control', "
+        f"got {variant!r}"
+    )
+
+
 def build_uicf_experiment_model(
     config: dict, *, expected_type: str, placement: Placement
 ) -> nn.Module:
@@ -103,18 +141,7 @@ def build_uicf_experiment_model(
     # Construct the exact baseline first so equal seeds preserve v1 weights.
     backbone = build_v1_model(backbone_config)
     uicf_config = config["uicf"]
-    uicf = UnderwaterImplicitCorrectionField(
-        feat_dim=int(uicf_config["feat_dim"]),
-        num_frequencies=int(uicf_config["num_frequencies"]),
-        mlp_hidden_dim=int(uicf_config["mlp_hidden_dim"]),
-        mlp_hidden_layers=int(uicf_config["mlp_hidden_layers"]),
-        anchor_hidden_dim=int(uicf_config["anchor_hidden_dim"]),
-        query_chunk_size=(
-            None
-            if uicf_config["query_chunk_size"] is None
-            else int(uicf_config["query_chunk_size"])
-        ),
-    )
+    uicf = _build_correction_module(uicf_config)
     return (
         UICFPreBackbone(backbone, uicf)
         if placement == "pre"
@@ -146,18 +173,7 @@ def build_uicf_unet_experiment_model(
     # Construct the exact baseline first so equal seeds preserve v4 weights.
     backbone = build_v4_model(backbone_config)
     uicf_config = config["uicf"]
-    uicf = UnderwaterImplicitCorrectionField(
-        feat_dim=int(uicf_config["feat_dim"]),
-        num_frequencies=int(uicf_config["num_frequencies"]),
-        mlp_hidden_dim=int(uicf_config["mlp_hidden_dim"]),
-        mlp_hidden_layers=int(uicf_config["mlp_hidden_layers"]),
-        anchor_hidden_dim=int(uicf_config["anchor_hidden_dim"]),
-        query_chunk_size=(
-            None
-            if uicf_config["query_chunk_size"] is None
-            else int(uicf_config["query_chunk_size"])
-        ),
-    )
+    uicf = _build_correction_module(uicf_config)
     return (
         UICFPreBackbone(backbone, uicf)
         if placement == "pre"
@@ -186,18 +202,7 @@ def build_uicf_color_query_unet_experiment_model(
     # Construct the exact v15 backbone first so equal seeds preserve all CQ states.
     backbone = build_v15_model(backbone_config)
     uicf_config = config["uicf"]
-    uicf = UnderwaterImplicitCorrectionField(
-        feat_dim=int(uicf_config["feat_dim"]),
-        num_frequencies=int(uicf_config["num_frequencies"]),
-        mlp_hidden_dim=int(uicf_config["mlp_hidden_dim"]),
-        mlp_hidden_layers=int(uicf_config["mlp_hidden_layers"]),
-        anchor_hidden_dim=int(uicf_config["anchor_hidden_dim"]),
-        query_chunk_size=(
-            None
-            if uicf_config["query_chunk_size"] is None
-            else int(uicf_config["query_chunk_size"])
-        ),
-    )
+    uicf = _build_correction_module(uicf_config)
     return (
         UICFPreBackbone(backbone, uicf)
         if placement == "pre"

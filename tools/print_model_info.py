@@ -15,6 +15,9 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.shared.uicf_controls import correction_parameter_report
+from src.shared.uicf_inr import UnderwaterImplicitCorrectionField
+
 
 def parameter_count(module: torch.nn.Module) -> int:
     return sum(parameter.numel() for parameter in module.parameters())
@@ -86,6 +89,32 @@ def main() -> None:
             print(f"CQ backbone params: {parameter_count(model.backbone)}")
             print_color_query_configuration(model.backbone, config["model"])
         print(f"UICF-INR params: {uicf_params}")
+        uicf_config = config["model"]["uicf"]
+        canonical = UnderwaterImplicitCorrectionField(
+            feat_dim=int(uicf_config["feat_dim"]),
+            num_frequencies=int(uicf_config["num_frequencies"]),
+            mlp_hidden_dim=int(uicf_config["mlp_hidden_dim"]),
+            mlp_hidden_layers=int(uicf_config["mlp_hidden_layers"]),
+            anchor_hidden_dim=int(uicf_config["anchor_hidden_dim"]),
+            query_chunk_size=(
+                None if uicf_config["query_chunk_size"] is None
+                else int(uicf_config["query_chunk_size"])
+            ),
+        )
+        match = correction_parameter_report(canonical, model.uicf)
+        print(f"field variant: {getattr(model.uicf, 'field_variant', 'implicit')}")
+        print(
+            "conditioning: "
+            f"spatial={getattr(model.uicf, 'use_spatial_conditioning', True)} "
+            f"global_field={getattr(model.uicf, 'use_global_field_conditioning', True)} "
+            f"learned_anchor={getattr(model.uicf, 'use_learned_anchor', True)}"
+        )
+        print(
+            "canonical UICF / selected correction-module trainable params: "
+            f"{match['implicit_trainable_parameters']} / "
+            f"{match['convolutional_trainable_parameters']}"
+        )
+        print(f"relative parameter difference: {match['relative_difference']:.8f}")
         print(f"input shape: {tuple(test_input.shape)}")
         print(f"UICF enhanced shape: {tuple(details.enhanced.shape)}")
         print(f"correction field shape: {tuple(details.correction_field.shape)}")

@@ -159,9 +159,16 @@ class UnderwaterImplicitCorrectionField(nn.Module):
         mlp_hidden_layers: int = 3,
         anchor_hidden_dim: int = 64,
         query_chunk_size: int | None = 65536,
+        use_spatial_conditioning: bool = True,
+        use_global_field_conditioning: bool = True,
+        use_learned_anchor: bool = True,
     ) -> None:
         super().__init__()
         self.feat_dim = feat_dim
+        self.field_variant = "implicit"
+        self.use_spatial_conditioning = bool(use_spatial_conditioning)
+        self.use_global_field_conditioning = bool(use_global_field_conditioning)
+        self.use_learned_anchor = bool(use_learned_anchor)
         self.encoder = ImageEncoder(feat_dim)
         self.spatial_encoding = PeriodicSpatialEncoding(num_frequencies)
         self.chromatic_anchor = GlobalChromaticAnchor(feat_dim, anchor_hidden_dim)
@@ -179,20 +186,33 @@ class UnderwaterImplicitCorrectionField(nn.Module):
         batch, _, height, width = image.shape
         encoded = self.encoder(image)
         local_feature = encoded.permute(0, 2, 3, 1).reshape(batch, height * width, self.feat_dim)
-        positional_feature = self.spatial_encoding(
-            batch, height, width, device=image.device, dtype=image.dtype
-        )
+        if self.use_spatial_conditioning:
+            positional_feature = self.spatial_encoding(
+                batch, height, width, device=image.device, dtype=image.dtype
+            )
+        else:
+            positional_feature = image.new_zeros(
+                batch, height * width, self.spatial_encoding.output_dim
+            )
         anchor, global_feature = self.chromatic_anchor(encoded)
-        expanded_global = global_feature.unsqueeze(1).expand(-1, height * width, -1)
+        if self.use_global_field_conditioning:
+            expanded_global = global_feature.unsqueeze(1).expand(-1, height * width, -1)
+        else:
+            expanded_global = global_feature.new_zeros(batch, height * width, self.feat_dim)
         mlp_input = torch.cat((local_feature, positional_feature, expanded_global), dim=-1)
         field_flat = self.field_mlp(mlp_input)
         correction_field = field_flat.reshape(batch, height, width, 3).permute(0, 3, 1, 2)
-        enhanced = image + correction_field * (image - anchor[:, :, None, None])
+        reconstruction_anchor = (
+            anchor if self.use_learned_anchor else torch.full_like(anchor, 0.5)
+        )
+        enhanced = image + correction_field * (
+            image - reconstruction_anchor[:, :, None, None]
+        )
         if not return_details:
             return enhanced
         return UICFINROutput(
             enhanced=enhanced,
             correction_field=correction_field,
-            chromatic_anchor=anchor,
+            chromatic_anchor=reconstruction_anchor,
             global_feature=global_feature,
         )

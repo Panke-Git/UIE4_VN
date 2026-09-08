@@ -232,7 +232,7 @@ def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(
             "1",
         ]
     )
-    output = run_dir / "result" / "uicf_alignment"
+    output = run_dir / "result" / "uicf_representation_alignment"
     required = {
         "per_sample_metrics.csv",
         "summary.json",
@@ -247,6 +247,17 @@ def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(
         "representative_contact_sheet.png",
         "metric_histogram_spearman.png",
         "real_vs_null_spearman.png",
+        "ranking_by_raw_field_spearman.csv",
+        "raw_field_null_control_summary.csv",
+        "representation_baseline_summary.csv",
+        "representation_bootstrap_summary.json",
+        "top_raw_field_alignment",
+        "representative_raw_field",
+        "top_raw_field_alignment_contact_sheet.png",
+        "representative_raw_field_contact_sheet.png",
+        "raw_field_spearman_histogram.png",
+        "raw_field_real_vs_null_spearman.png",
+        "representation_vs_controls_spearman.png",
     }
     assert required <= {path.name for path in output.iterdir()}
     summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
@@ -262,6 +273,10 @@ def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(
     assert summary["processed_sample_count"] == 1
     assert summary["successful_sample_count"] == 1
     assert summary["failed_sample_count"] == 0
+    assert summary["evaluation_mode"] == "in_domain"
+    assert "raw_field_representation" in summary
+    assert "baseline_controls" in summary
+    assert "paired_representation_comparisons" in summary
     assert summary["valid_sample_counts"]["spearman_rgb"] == 0
     assert summary["metrics"]["spearman_rgb"]["invalid_count"] == 1
     protocol = json.loads((output / "protocol.json").read_text(encoding="utf-8"))
@@ -274,6 +289,11 @@ def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(
     assert protocol["data_root"] == str(data_root)
     assert protocol["test_manifest"] == str(run_dir / "split_snapshot" / "test.tsv")
     assert protocol["checkpoint_selector"] == "best_psnr"
+    assert protocol["script_version"] == "2.0"
+    assert protocol["analysis_target"] == "UICF implicit coefficient representation R(x)"
+    assert protocol["raw_field_interpretation"] == (
+        "R(x) is not interpreted as the RGB target residual"
+    )
     assert protocol["test_manifest_sample_count"] == 1
     assert f"{dataset_name} test set" in (output / "summary.txt").read_text(encoding="utf-8")
     csv_text = (output / "per_sample_metrics.csv").read_text(encoding="utf-8").lower()

@@ -258,6 +258,22 @@ python tools/analyze_clean_test.py \
   --v2-run experiments/<point_inr_run> \
   --v3-run experiments/<glinr_run>
 
+# UICF representation-level analysis (R is a coefficient field, not an RGB residual)
+python tools/analyze_uicf_alignment.py \
+  --run-dir experiments/<v16_run> --checkpoint best_psnr --gpu 0 \
+  --patch-size 16 --top-fraction 0.20 --num-null-shifts 20
+
+# Zero-shot evaluation: checkpoint/model remain from the run; only data/evaluation come from this config
+python tools/analyze_uicf_alignment.py \
+  --run-dir experiments/<lsui_v16_run> --checkpoint best_psnr \
+  --evaluation-config configs/uieb/config_v16_uieb.yaml \
+  --data-root /path/to/UIEB19 --gpu 0
+
+# Summarize already-generated representation results without recomputing images
+python tools/summarize_uicf_representation_runs.py \
+  --run-dir experiments/<full_run> experiments/<no_coordinate_run> \
+  experiments/<no_global_run> experiments/<conv_control_run>
+
 # Static and numerical verification
 python -m compileall src
 python -m pytest -q
@@ -287,6 +303,16 @@ v4-v6 instead use the standard Plain U-Net channel path `64→128→256→512→
 The v7-v10 pre-INR modules always receive and return three-channel tensors at the original input resolution. Point-INR therefore has the same 20,739 parameters in v7 and v9; GL-INR has the same 139,651 parameters in v8 and v10. Their residual outputs are passed directly into the backbone without clamping.
 
 UICF-INR has its own full-resolution 48-channel two-block image encoder, fixed eight-band periodic spatial encoding without a pi multiplier, global-average chromatic anchor `48→64→3→Sigmoid`, and a three-hidden-layer `128→128` per-pixel correction MLP. It has 137,734 parameters. Consequently v11/v12 each have 1,115,689 parameters, exactly 137,734 more than v1, while v13/v14 each have 31,175,497 parameters, exactly 137,734 more than the 31,037,763-parameter v4. Parallel variants add no fusion parameters. Dataset tensors already use RGB float `[0,1]`, so no UICF domain adapter is used. UICF and final model forward paths do not clamp outputs; the existing validation/test protocol still clamps a detached float prediction only for metrics and PNG output.
+
+The v16 ablation configs under `configs/ablations/{lsui,uieb}/` mask coordinate
+conditioning or global-field conditioning without changing any parameter tensor.
+The convolutional control shares the encoder, learned anchor, reconstruction
+equation and identity initialization, while replacing only the implicit field
+predictor; its 136,918 correction-module parameters differ from canonical UICF
+by 816 (about 0.592%). Representation analysis writes to
+`result/uicf_representation_alignment/` and compares `||R(x)||` against paired
+RGB/DeltaE00 restoration demand, shifted-null maps, `||I-b||`, and fixed RGB
+Sobel gradients. No visualization normalization is used for these metrics.
 
 The shared Color-Query V4 backbone uses eight learnable 128-dimensional base queries, four-head attention, 2x FFNs, and zero dropout. Feature projections are independent 1x1 convolutions, token refinement uses feature cross-attention followed by token self-attention and an FFN, and decoder guidance uses spatial pixels as queries with color tokens as keys/values. All attention paths use `need_weights=False`; encoder features are never pooled for attention. V15 has 38,740,483 parameters. V16/V17 each have 38,878,217 parameters, exactly one 137,734-parameter canonical UICF more than V15, and V17 adds no fusion parameters.
 

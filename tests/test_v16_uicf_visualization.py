@@ -25,6 +25,7 @@ from tools.visualize_v16_uicf import (
     split_correction_channels,
     symmetric_heatmap_range,
 )
+from tools.analyze_uicf_alignment import save_representation_visualization
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -176,6 +177,23 @@ def test_all_sample_artifacts_and_panel_are_generated(tmp_path: Path) -> None:
         assert panel.mode == "RGB"
         assert panel.width > panel.height
         assert panel.info["dpi"] == pytest.approx((300.0, 300.0), abs=0.1)
+
+
+def test_representation_panel_labels_raw_field_as_coefficient(tmp_path: Path) -> None:
+    sample = _sample()
+    row = {"sample_index": sample.index, "sample_id": sample.sample_id}
+    panel = save_representation_visualization(
+        sample, row, tmp_path / "representation", patch_size=2,
+        top_fraction=0.20, robust_percentile=99.0, selection_type="test",
+    )
+    assert panel.is_file()
+    metadata = json.loads(
+        (tmp_path / "representation/representation_metadata.json").read_text()
+    )
+    assert "coefficient field" in metadata["raw_field_interpretation"]
+    assert "not interpreted" in metadata["raw_field_interpretation"]
+    assert (tmp_path / "representation/raw_field_magnitude.npy").is_file()
+    assert (tmp_path / "representation/raw_field_top20_overlap.png").is_file()
 
 
 def test_sample_selection_modes_are_deterministic_and_unambiguous() -> None:

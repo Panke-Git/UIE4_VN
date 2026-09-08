@@ -8,9 +8,10 @@ The three quantities in this analysis are deliberately kept distinct:
   induced by UICF before the backbone.
 * ``delta_gt = Y - I`` is the paired-reference restoration residual.
 
-All quantitative spatial-alignment metrics use ``delta_uicf``.  The raw
-coefficient field is reported only as a separately named supplementary
-diagnostic.  Visualization normalization is never used in a metric.
+The original actual-effect metrics are retained for backward compatibility.
+The primary representation analysis operates on the explicitly named raw
+coefficient field ``R(x)`` and compares it with fixed anchor/gradient controls.
+Visualization normalization is never used in a metric.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from PIL import Image, ImageDraw
 from skimage.color import rgb2lab
 import torch
 from torch import Tensor
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -40,9 +42,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.shared.e00 import batch_delta_e00, delta_e00_from_lab, e00_protocol
-from src.shared.uicf_inr import UICFINROutput
+from src.shared.uicf_controls import correction_parameter_report
+from src.shared.uicf_inr import UICFINROutput, UnderwaterImplicitCorrectionField
 from src.shared.uicf_models import UICFPreBackbone
-from src.v16.dataset import LSUIDataset, ManifestEntry, validate_split_protocol
+from src.v16.dataset import (
+    LSUIDataset,
+    ManifestEntry,
+    read_manifest,
+    validate_split_protocol,
+    verify_image_entries,
+)
 from src.v16.metrics import batch_metrics
 from src.v16.test import _checkpoint_path, _torch_load
 from src.v16.utils import (
@@ -63,7 +72,7 @@ from tools.visualize_v16_uicf import (
 )
 
 
-SCRIPT_VERSION = "1.0"
+SCRIPT_VERSION = "2.0"
 EXPECTED_VERSION = "v16"
 EPSILON = 1e-12
 PER_SAMPLE_FIELDS = [
@@ -85,6 +94,53 @@ PER_SAMPLE_FIELDS = [
     "spearman_e00",
     "pearson_e00",
     "raw_field_spearman_rgb",
+    "raw_field_pearson_rgb",
+    "raw_field_top20_iou_rgb",
+    "raw_field_top20_precision_rgb",
+    "raw_field_top20_recall_rgb",
+    "raw_field_spearman_e00",
+    "raw_field_pearson_e00",
+    "raw_field_null_spearman_rgb_mean",
+    "raw_field_null_spearman_rgb_std",
+    "raw_field_null_spearman_valid_shift_count",
+    "raw_field_null_pearson_rgb_mean",
+    "raw_field_null_pearson_rgb_std",
+    "raw_field_null_pearson_valid_shift_count",
+    "raw_field_null_top20_iou_rgb_mean",
+    "raw_field_null_top20_iou_rgb_std",
+    "raw_field_null_top20_valid_shift_count",
+    "raw_field_null_spearman_e00_mean",
+    "raw_field_null_spearman_e00_std",
+    "raw_field_null_spearman_e00_valid_count",
+    "raw_field_spearman_gain_over_null",
+    "raw_field_top20_iou_gain_over_null",
+    "raw_field_spearman_e00_gain_over_null",
+    "mean_anchor_deviation",
+    "anchor_spearman_rgb",
+    "anchor_top20_iou_rgb",
+    "anchor_spearman_e00",
+    "anchor_null_spearman_rgb_mean",
+    "anchor_null_top20_iou_rgb_mean",
+    "anchor_null_spearman_e00_mean",
+    "anchor_spearman_gain_over_null",
+    "anchor_top20_iou_gain_over_null",
+    "anchor_spearman_e00_gain_over_null",
+    "mean_gradient_magnitude",
+    "gradient_spearman_rgb",
+    "gradient_top20_iou_rgb",
+    "gradient_spearman_e00",
+    "gradient_null_spearman_rgb_mean",
+    "gradient_null_top20_iou_rgb_mean",
+    "gradient_null_spearman_e00_mean",
+    "gradient_spearman_gain_over_null",
+    "gradient_top20_iou_gain_over_null",
+    "gradient_spearman_e00_gain_over_null",
+    "raw_minus_anchor_spearman_rgb",
+    "raw_minus_gradient_spearman_rgb",
+    "raw_minus_anchor_top20_iou_rgb",
+    "raw_minus_gradient_top20_iou_rgb",
+    "raw_minus_anchor_spearman_e00",
+    "raw_minus_gradient_spearman_e00",
     "null_valid_shift_count",
     "null_pearson_valid_shift_count",
     "null_top20_valid_shift_count",
@@ -126,6 +182,37 @@ NULL_FIELDS = [
     "null_pearson_valid_shift_count",
     "null_top20_valid_shift_count",
     "null_direction_valid_shift_count",
+]
+RAW_NULL_FIELDS = [
+    "sample_index", "sample_id", "filename",
+    "raw_field_spearman_rgb", "raw_field_null_spearman_rgb_mean",
+    "raw_field_spearman_gain_over_null", "raw_field_pearson_rgb",
+    "raw_field_null_pearson_rgb_mean", "raw_field_top20_iou_rgb",
+    "raw_field_null_top20_iou_rgb_mean", "raw_field_top20_iou_gain_over_null",
+    "raw_field_spearman_e00", "raw_field_null_spearman_e00_mean",
+    "raw_field_spearman_e00_gain_over_null",
+    "raw_field_null_spearman_valid_shift_count",
+    "raw_field_null_pearson_valid_shift_count",
+    "raw_field_null_top20_valid_shift_count",
+    "raw_field_null_spearman_e00_valid_count",
+]
+BASELINE_FIELDS = [
+    "sample_index", "sample_id", "filename",
+    "raw_field_spearman_rgb", "raw_field_null_spearman_rgb_mean",
+    "raw_field_top20_iou_rgb", "raw_field_null_top20_iou_rgb_mean",
+    "raw_field_spearman_e00", "raw_field_null_spearman_e00_mean",
+    "anchor_spearman_rgb", "anchor_null_spearman_rgb_mean",
+    "anchor_spearman_gain_over_null", "anchor_top20_iou_rgb",
+    "anchor_null_top20_iou_rgb_mean", "anchor_top20_iou_gain_over_null",
+    "anchor_spearman_e00", "anchor_null_spearman_e00_mean",
+    "anchor_spearman_e00_gain_over_null", "gradient_spearman_rgb",
+    "gradient_null_spearman_rgb_mean", "gradient_spearman_gain_over_null",
+    "gradient_top20_iou_rgb", "gradient_null_top20_iou_rgb_mean",
+    "gradient_top20_iou_gain_over_null", "gradient_spearman_e00",
+    "gradient_null_spearman_e00_mean", "gradient_spearman_e00_gain_over_null",
+    "raw_minus_anchor_spearman_rgb", "raw_minus_gradient_spearman_rgb",
+    "raw_minus_anchor_top20_iou_rgb", "raw_minus_gradient_top20_iou_rgb",
+    "raw_minus_anchor_spearman_e00", "raw_minus_gradient_spearman_e00",
 ]
 
 
@@ -175,12 +262,17 @@ def _list_collate(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Analyze v16 UICF spatial restoration-demand alignment"
+        description="Analyze v16 UICF representation-level restoration-demand alignment"
     )
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--gpu", type=int, default=None)
     parser.add_argument("--data-root", default=None)
+    parser.add_argument(
+        "--evaluation-config",
+        default=None,
+        help="Optional external dataset config for zero-shot cross-dataset evaluation",
+    )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument(
@@ -466,11 +558,121 @@ def _optional_summary(values: Sequence[float]) -> tuple[float | None, float | No
     return float(array.mean()), float(array.std(ddof=0)), int(array.size)
 
 
+def anchor_deviation_map(input_tensor: Tensor, chromatic_anchor: Tensor) -> np.ndarray:
+    """Return ``||I(p)-b||_2`` exactly, with no display normalization."""
+
+    image = input_tensor.detach().to(device="cpu", dtype=torch.float64)
+    anchor = chromatic_anchor.detach().to(device="cpu", dtype=torch.float64).reshape(-1)
+    if image.ndim != 3 or image.shape[0] != 3 or anchor.shape != (3,):
+        raise ValueError("Anchor deviation expects image [3,H,W] and anchor [3]")
+    if not torch.isfinite(image).all() or not torch.isfinite(anchor).all():
+        raise FloatingPointError("Anchor deviation input must be finite")
+    values = torch.linalg.vector_norm(image - anchor[:, None, None], dim=0)
+    return values.to(dtype=torch.float64).numpy()
+
+
+def rgb_sobel_gradient(input_tensor: Tensor) -> np.ndarray:
+    """Return fixed per-channel RGB Sobel magnitude using reflect padding."""
+
+    image = input_tensor.detach().to(device="cpu", dtype=torch.float64)
+    if image.ndim != 3 or image.shape[0] != 3:
+        raise ValueError("RGB Sobel expects a [3,H,W] tensor")
+    if image.shape[-2] < 2 or image.shape[-1] < 2:
+        raise ValueError("RGB Sobel reflect padding requires H and W >= 2")
+    if not torch.isfinite(image).all():
+        raise FloatingPointError("RGB Sobel input must be finite")
+    kernel_x = image.new_tensor(
+        [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]
+    ) / 8.0
+    kernel_y = image.new_tensor(
+        [[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]]
+    ) / 8.0
+    padded = F.pad(image.unsqueeze(0), (1, 1, 1, 1), mode="reflect")
+    gx = F.conv2d(padded, kernel_x.reshape(1, 1, 3, 3).expand(3, -1, -1, -1), groups=3)
+    gy = F.conv2d(padded, kernel_y.reshape(1, 1, 3, 3).expand(3, -1, -1, -1), groups=3)
+    values = torch.sqrt(torch.sum(gx.square() + gy.square(), dim=1))[0]
+    if not torch.isfinite(values).all() or bool((values < 0.0).any()):
+        raise FloatingPointError("RGB Sobel produced invalid values")
+    return values.numpy()
+
+
+def _gain(real: OptionalMetric | float, null_mean: float | None) -> float | None:
+    real_value = real if isinstance(real, float) else real.value
+    return None if real_value is None or null_mean is None else float(real_value - null_mean)
+
+
+def _paired_difference(first: float | None, second: float | None) -> float | None:
+    return None if first is None or second is None else float(first - second)
+
+
+def _representation_metrics(
+    pooled_map: np.ndarray,
+    pooled_gt_rgb: np.ndarray,
+    pooled_gt_e00: np.ndarray,
+    shifts: Sequence[tuple[int, int]],
+    top_fraction: float,
+) -> dict[str, float | int | None]:
+    """Compute real and same-shift null metrics for one scalar representation."""
+
+    spearman_rgb = spearman_correlation(pooled_map, pooled_gt_rgb)
+    pearson_rgb = pearson_correlation(pooled_map, pooled_gt_rgb)
+    spearman_e00 = spearman_correlation(pooled_map, pooled_gt_e00)
+    pearson_e00 = pearson_correlation(pooled_map, pooled_gt_e00)
+    iou, precision, recall = top_fraction_overlap(
+        pooled_map, pooled_gt_rgb, top_fraction
+    )
+    null_spearman_rgb: list[float] = []
+    null_pearson_rgb: list[float] = []
+    null_iou_rgb: list[float] = []
+    null_spearman_e00: list[float] = []
+    for dy, dx in shifts:
+        shifted = np.roll(pooled_map, shift=(dy, dx), axis=(0, 1))
+        shifted_spearman_rgb = spearman_correlation(shifted, pooled_gt_rgb)
+        shifted_pearson_rgb = pearson_correlation(shifted, pooled_gt_rgb)
+        shifted_spearman_e00 = spearman_correlation(shifted, pooled_gt_e00)
+        if shifted_spearman_rgb.valid:
+            null_spearman_rgb.append(float(shifted_spearman_rgb.value))
+        if shifted_pearson_rgb.valid:
+            null_pearson_rgb.append(float(shifted_pearson_rgb.value))
+        if shifted_spearman_e00.valid:
+            null_spearman_e00.append(float(shifted_spearman_e00.value))
+        null_iou_rgb.append(top_fraction_overlap(shifted, pooled_gt_rgb, top_fraction)[0])
+    sr_mean, sr_std, sr_count = _optional_summary(null_spearman_rgb)
+    pr_mean, pr_std, pr_count = _optional_summary(null_pearson_rgb)
+    iou_mean, iou_std, iou_count = _optional_summary(null_iou_rgb)
+    se_mean, se_std, se_count = _optional_summary(null_spearman_e00)
+    return {
+        "spearman_rgb": spearman_rgb.value,
+        "pearson_rgb": pearson_rgb.value,
+        "top20_iou_rgb": float(iou),
+        "top20_precision_rgb": float(precision),
+        "top20_recall_rgb": float(recall),
+        "spearman_e00": spearman_e00.value,
+        "pearson_e00": pearson_e00.value,
+        "null_spearman_rgb_mean": sr_mean,
+        "null_spearman_rgb_std": sr_std,
+        "null_spearman_valid_shift_count": sr_count,
+        "null_pearson_rgb_mean": pr_mean,
+        "null_pearson_rgb_std": pr_std,
+        "null_pearson_valid_shift_count": pr_count,
+        "null_top20_iou_rgb_mean": iou_mean,
+        "null_top20_iou_rgb_std": iou_std,
+        "null_top20_valid_shift_count": iou_count,
+        "null_spearman_e00_mean": se_mean,
+        "null_spearman_e00_std": se_std,
+        "null_spearman_e00_valid_count": se_count,
+        "spearman_gain_over_null": _gain(spearman_rgb, sr_mean),
+        "top20_iou_gain_over_null": _gain(float(iou), iou_mean),
+        "spearman_e00_gain_over_null": _gain(spearman_e00, se_mean),
+    }
+
+
 def analyze_spatial_maps(
     input_tensor: Tensor,
     target_tensor: Tensor,
     enhanced_tensor: Tensor,
     correction_field: Tensor,
+    chromatic_anchor: Tensor,
     *,
     sample_id: str,
     sample_index: int,
@@ -479,7 +681,7 @@ def analyze_spatial_maps(
     num_null_shifts: int,
     null_seed: int,
 ) -> tuple[dict[str, float | int | None], dict[str, np.ndarray]]:
-    """Compute patch-level alignment from actual UICF and GT RGB residuals."""
+    """Compute actual-effect, coefficient-representation, and control metrics."""
 
     tensors = (input_tensor, target_tensor, enhanced_tensor, correction_field)
     if any(tensor.ndim != 3 or tensor.shape[0] != 3 for tensor in tensors):
@@ -496,11 +698,15 @@ def analyze_spatial_maps(
     uicf_effect = np.linalg.norm(delta_uicf, axis=0)
     raw_field_magnitude = np.linalg.norm(raw_field, axis=0)
     gt_e00_demand = per_pixel_delta_e00_map(input_tensor, target_tensor)
+    anchor_deviation = anchor_deviation_map(input_tensor, chromatic_anchor)
+    gradient_magnitude = rgb_sobel_gradient(input_tensor)
 
     pooled_gt_rgb = patch_average_pool(gt_rgb_demand, patch_size, sample_id=sample_id)
     pooled_uicf = patch_average_pool(uicf_effect, patch_size, sample_id=sample_id)
     pooled_gt_e00 = patch_average_pool(gt_e00_demand, patch_size, sample_id=sample_id)
     pooled_raw = patch_average_pool(raw_field_magnitude, patch_size, sample_id=sample_id)
+    pooled_anchor = patch_average_pool(anchor_deviation, patch_size, sample_id=sample_id)
+    pooled_gradient = patch_average_pool(gradient_magnitude, patch_size, sample_id=sample_id)
     pooled_delta_gt = patch_average_pool(delta_gt, patch_size, sample_id=sample_id)
     pooled_delta_uicf = patch_average_pool(delta_uicf, patch_size, sample_id=sample_id)
 
@@ -508,7 +714,6 @@ def analyze_spatial_maps(
     pearson_rgb = pearson_correlation(pooled_uicf, pooled_gt_rgb)
     spearman_e00 = spearman_correlation(pooled_uicf, pooled_gt_e00)
     pearson_e00 = pearson_correlation(pooled_uicf, pooled_gt_e00)
-    raw_spearman = spearman_correlation(pooled_raw, pooled_gt_rgb)
     iou, precision, recall = top_fraction_overlap(pooled_uicf, pooled_gt_rgb, top_fraction)
     direction = direction_cosine_top_demand(
         pooled_delta_uicf, pooled_delta_gt, pooled_gt_rgb, top_fraction
@@ -516,6 +721,15 @@ def analyze_spatial_maps(
 
     shifts = generate_null_shifts(
         pooled_uicf.shape[0], pooled_uicf.shape[1], num_null_shifts, null_seed, sample_index
+    )
+    raw_metrics = _representation_metrics(
+        pooled_raw, pooled_gt_rgb, pooled_gt_e00, shifts, top_fraction
+    )
+    anchor_metrics = _representation_metrics(
+        pooled_anchor, pooled_gt_rgb, pooled_gt_e00, shifts, top_fraction
+    )
+    gradient_metrics = _representation_metrics(
+        pooled_gradient, pooled_gt_rgb, pooled_gt_e00, shifts, top_fraction
     )
     null_spearman: list[float] = []
     null_pearson: list[float] = []
@@ -543,10 +757,6 @@ def analyze_spatial_maps(
     null_iou_mean, null_iou_std, null_iou_count = _optional_summary(null_iou)
     null_direction_mean, null_direction_std, null_direction_count = _optional_summary(null_direction)
 
-    def gain(real: OptionalMetric | float, null_mean: float | None) -> float | None:
-        real_value = real if isinstance(real, float) else real.value
-        return None if real_value is None or null_mean is None else float(real_value - null_mean)
-
     row: dict[str, float | int | None] = {
         "mean_gt_rgb_demand": float(gt_rgb_demand.mean(dtype=np.float64)),
         "mean_gt_e00_demand": float(gt_e00_demand.mean(dtype=np.float64)),
@@ -559,7 +769,29 @@ def analyze_spatial_maps(
         "direction_cosine_top20_gt": direction.value,
         "spearman_e00": spearman_e00.value,
         "pearson_e00": pearson_e00.value,
-        "raw_field_spearman_rgb": raw_spearman.value,
+        **{f"raw_field_{key}": value for key, value in raw_metrics.items()},
+        "mean_anchor_deviation": float(anchor_deviation.mean(dtype=np.float64)),
+        **{
+            f"anchor_{key}": value
+            for key, value in anchor_metrics.items()
+            if key in {
+                "spearman_rgb", "top20_iou_rgb", "spearman_e00",
+                "null_spearman_rgb_mean", "null_top20_iou_rgb_mean",
+                "null_spearman_e00_mean", "spearman_gain_over_null",
+                "top20_iou_gain_over_null", "spearman_e00_gain_over_null",
+            }
+        },
+        "mean_gradient_magnitude": float(gradient_magnitude.mean(dtype=np.float64)),
+        **{
+            f"gradient_{key}": value
+            for key, value in gradient_metrics.items()
+            if key in {
+                "spearman_rgb", "top20_iou_rgb", "spearman_e00",
+                "null_spearman_rgb_mean", "null_top20_iou_rgb_mean",
+                "null_spearman_e00_mean", "spearman_gain_over_null",
+                "top20_iou_gain_over_null", "spearman_e00_gain_over_null",
+            }
+        },
         "null_valid_shift_count": null_spearman_count,
         "null_pearson_valid_shift_count": null_pearson_count,
         "null_top20_valid_shift_count": null_iou_count,
@@ -572,18 +804,46 @@ def analyze_spatial_maps(
         "null_top20_iou_rgb_std": null_iou_std,
         "null_direction_cosine_mean": null_direction_mean,
         "null_direction_cosine_std": null_direction_std,
-        "spearman_gain_over_null": gain(spearman_rgb, null_spearman_mean),
-        "top20_iou_gain_over_null": gain(float(iou), null_iou_mean),
-        "direction_gain_over_null": gain(direction, null_direction_mean),
+        "spearman_gain_over_null": _gain(spearman_rgb, null_spearman_mean),
+        "top20_iou_gain_over_null": _gain(float(iou), null_iou_mean),
+        "direction_gain_over_null": _gain(direction, null_direction_mean),
         "raw_field_mean_abs": float(np.abs(raw_field).mean(dtype=np.float64)),
         "raw_field_std": float(raw_field.std(dtype=np.float64)),
     }
+    row.update(
+        {
+            "raw_minus_anchor_spearman_rgb": _paired_difference(
+                raw_metrics["spearman_rgb"], anchor_metrics["spearman_rgb"]
+            ),
+            "raw_minus_gradient_spearman_rgb": _paired_difference(
+                raw_metrics["spearman_rgb"], gradient_metrics["spearman_rgb"]
+            ),
+            "raw_minus_anchor_top20_iou_rgb": _paired_difference(
+                raw_metrics["top20_iou_rgb"], anchor_metrics["top20_iou_rgb"]
+            ),
+            "raw_minus_gradient_top20_iou_rgb": _paired_difference(
+                raw_metrics["top20_iou_rgb"], gradient_metrics["top20_iou_rgb"]
+            ),
+            "raw_minus_anchor_spearman_e00": _paired_difference(
+                raw_metrics["spearman_e00"], anchor_metrics["spearman_e00"]
+            ),
+            "raw_minus_gradient_spearman_e00": _paired_difference(
+                raw_metrics["spearman_e00"], gradient_metrics["spearman_e00"]
+            ),
+        }
+    )
     maps = {
         "gt_rgb_demand": gt_rgb_demand,
         "uicf_effect_magnitude": uicf_effect,
         "gt_e00_demand": gt_e00_demand,
         "pooled_gt_rgb": pooled_gt_rgb,
         "pooled_uicf_effect": pooled_uicf,
+        "raw_field_magnitude": raw_field_magnitude,
+        "anchor_deviation": anchor_deviation,
+        "gradient_magnitude": gradient_magnitude,
+        "pooled_raw_field": pooled_raw,
+        "pooled_anchor_deviation": pooled_anchor,
+        "pooled_gradient_magnitude": pooled_gradient,
     }
     return row, maps
 
@@ -758,6 +1018,7 @@ def evaluate_test_set(
                         target_cpu,
                         enhanced_cpu,
                         field_cpu,
+                        sample_details.chromatic_anchor[0].detach().float().cpu(),
                         sample_id=entry.sample_id,
                         sample_index=index,
                         patch_size=patch_size,
@@ -883,7 +1144,7 @@ def build_summary(
     failures: Sequence[Mapping[str, Any]],
     *,
     dataset_name: str,
-    split_counts: Mapping[str, int],
+    split_counts: Mapping[str, int | None],
     data_root: Path,
     test_manifest: Path,
     bootstrap_samples: int,
@@ -897,6 +1158,9 @@ def build_summary(
         "spearman_e00",
     )
     metrics = {field: descriptive_statistics(rows, field) for field in metric_fields}
+    quality_metrics = {
+        field: descriptive_statistics(rows, field) for field in ("psnr", "ssim", "e00")
+    }
     null_specs = {
         "spearman_rgb": ("spearman_rgb", "null_spearman_rgb_mean"),
         "pearson_rgb": ("pearson_rgb", "null_pearson_rgb_mean"),
@@ -910,10 +1174,76 @@ def build_summary(
         name: paired_null_statistics(rows, real_field, null_field)
         for name, (real_field, null_field) in null_specs.items()
     }
+    raw_fields = (
+        "raw_field_spearman_rgb", "raw_field_pearson_rgb",
+        "raw_field_top20_iou_rgb", "raw_field_top20_precision_rgb",
+        "raw_field_top20_recall_rgb", "raw_field_spearman_e00",
+        "raw_field_pearson_e00",
+    )
+    anchor_fields = (
+        "anchor_spearman_rgb", "anchor_top20_iou_rgb", "anchor_spearman_e00"
+    )
+    gradient_fields = (
+        "gradient_spearman_rgb", "gradient_top20_iou_rgb", "gradient_spearman_e00"
+    )
+    raw_field_representation = {
+        "metrics": {field: descriptive_statistics(rows, field) for field in raw_fields},
+        "null_controls": {
+            "spearman_rgb": paired_null_statistics(
+                rows, "raw_field_spearman_rgb", "raw_field_null_spearman_rgb_mean"
+            ),
+            "pearson_rgb": paired_null_statistics(
+                rows, "raw_field_pearson_rgb", "raw_field_null_pearson_rgb_mean"
+            ),
+            "top20_iou_rgb": paired_null_statistics(
+                rows, "raw_field_top20_iou_rgb", "raw_field_null_top20_iou_rgb_mean"
+            ),
+            "spearman_e00": paired_null_statistics(
+                rows, "raw_field_spearman_e00", "raw_field_null_spearman_e00_mean"
+            ),
+        },
+    }
+
+    def control_section(prefix: str, fields: Sequence[str]) -> dict[str, Any]:
+        return {
+            "metrics": {field: descriptive_statistics(rows, field) for field in fields},
+            "null_controls": {
+                "spearman_rgb": paired_null_statistics(
+                    rows, f"{prefix}_spearman_rgb", f"{prefix}_null_spearman_rgb_mean"
+                ),
+                "top20_iou_rgb": paired_null_statistics(
+                    rows, f"{prefix}_top20_iou_rgb", f"{prefix}_null_top20_iou_rgb_mean"
+                ),
+                "spearman_e00": paired_null_statistics(
+                    rows, f"{prefix}_spearman_e00", f"{prefix}_null_spearman_e00_mean"
+                ),
+            },
+        }
+
+    anchor_control = control_section("anchor", anchor_fields)
+    gradient_control = control_section("gradient", gradient_fields)
+    comparison_fields = (
+        "raw_minus_anchor_spearman_rgb", "raw_minus_gradient_spearman_rgb",
+        "raw_minus_anchor_top20_iou_rgb", "raw_minus_gradient_top20_iou_rgb",
+        "raw_minus_anchor_spearman_e00", "raw_minus_gradient_spearman_e00",
+    )
+    paired_comparisons = {
+        field: descriptive_statistics(rows, field) for field in comparison_fields
+    }
     bootstrap_specs = {
         "spearman_gain": "spearman_gain_over_null",
         "iou_gain": "top20_iou_gain_over_null",
         "direction_gain": "direction_gain_over_null",
+        "raw_field_spearman_gain": "raw_field_spearman_gain_over_null",
+        "raw_field_iou_gain": "raw_field_top20_iou_gain_over_null",
+        "raw_field_spearman_e00_gain": "raw_field_spearman_e00_gain_over_null",
+        "anchor_spearman_gain": "anchor_spearman_gain_over_null",
+        "anchor_iou_gain": "anchor_top20_iou_gain_over_null",
+        "anchor_spearman_e00_gain": "anchor_spearman_e00_gain_over_null",
+        "gradient_spearman_gain": "gradient_spearman_gain_over_null",
+        "gradient_iou_gain": "gradient_top20_iou_gain_over_null",
+        "gradient_spearman_e00_gain": "gradient_spearman_e00_gain_over_null",
+        **{field: field for field in comparison_fields},
     }
     bootstrap: dict[str, Any] = {
         "resamples": bootstrap_samples,
@@ -929,22 +1259,43 @@ def build_summary(
         bootstrap[f"{name}_mean"] = result["mean_difference"]
         bootstrap[f"{name}_ci95_low"] = result["ci95_low"]
         bootstrap[f"{name}_ci95_high"] = result["ci95_high"]
-    return {
+    test_count = int(split_counts["test"] or 0)
+    summary = {
         "dataset": dataset_name,
-        "train_count": int(split_counts["train"]),
-        "validation_count": int(split_counts["validation"]),
-        "test_count": int(split_counts["test"]),
+        "train_count": None if split_counts.get("train") is None else int(split_counts["train"]),
+        "validation_count": None if split_counts.get("validation") is None else int(split_counts["validation"]),
+        "test_count": test_count,
         "data_root": str(data_root),
         "test_manifest": str(test_manifest),
-        "total_test_samples": int(split_counts["test"]),
+        "total_test_samples": test_count,
         "processed_sample_count": len(rows) + len(failures),
         "successful_sample_count": len(rows),
         "failed_sample_count": len(failures),
         "metrics": metrics,
+        "quality_metrics": quality_metrics,
         "valid_sample_counts": {field: values["valid_count"] for field, values in metrics.items()},
         "null_controls": null_controls,
         "bootstrap": bootstrap,
+        "actual_correction_effect": {
+            "metrics": metrics,
+            "null_controls": null_controls,
+        },
+        "raw_field_representation": raw_field_representation,
+        "anchor_deviation_control": anchor_control,
+        "image_gradient_control": gradient_control,
+        "baseline_controls": {
+            "anchor_deviation": anchor_control,
+            "image_gradient": gradient_control,
+        },
+        "paired_representation_comparisons": paired_comparisons,
     }
+    summary["representation_bootstrap"] = {
+        key: value
+        for key, value in bootstrap.items()
+        if key in {"resamples", "seed", "resampling_unit"}
+        or key.startswith(("raw_field_", "anchor_", "gradient_", "raw_minus_"))
+    }
+    return summary
 
 
 def _display_range(values: np.ndarray, percentile: float) -> tuple[float, float]:
@@ -1025,6 +1376,7 @@ def save_alignment_visualization(
         sample.target_tensor,
         sample.enhanced,
         sample.correction_field,
+        sample.chromatic_anchor,
         sample_id=sample.sample_id,
         sample_index=sample.index,
         patch_size=patch_size,
@@ -1091,6 +1443,92 @@ def save_alignment_visualization(
         "raw_field_interpretation": "R(x) is a coefficient field, not an RGB correction residual",
     }
     atomic_json(directory / "alignment_metadata.json", metadata)
+    return panel_path
+
+
+def save_representation_visualization(
+    sample: CapturedSample,
+    row: Mapping[str, Any],
+    directory: Path,
+    *,
+    patch_size: int,
+    top_fraction: float,
+    robust_percentile: float,
+    selection_type: str,
+) -> Path:
+    """Save the eight-column coefficient-representation control panel."""
+
+    directory.mkdir(parents=True, exist_ok=False)
+    _, maps = analyze_spatial_maps(
+        sample.input_tensor,
+        sample.target_tensor,
+        sample.enhanced,
+        sample.correction_field,
+        sample.chromatic_anchor,
+        sample_id=sample.sample_id,
+        sample_index=sample.index,
+        patch_size=patch_size,
+        top_fraction=top_fraction,
+        num_null_shifts=1,
+        null_seed=0,
+    )
+    input_image = tensor_to_image(sample.input_tensor)
+    gt_image = tensor_to_image(sample.target_tensor)
+    input_image.save(directory / "input.png")
+    gt_image.save(directory / "gt.png")
+    display_ranges: dict[str, list[float]] = {}
+    heatmaps: dict[str, Image.Image] = {}
+    map_keys = (
+        "gt_rgb_demand", "raw_field_magnitude", "anchor_deviation",
+        "gradient_magnitude", "gt_e00_demand",
+    )
+    for key in map_keys:
+        values = maps[key]
+        np.save(directory / f"{key}.npy", values, allow_pickle=False)
+        lower, upper = _display_range(values, robust_percentile)
+        display_ranges[key] = [lower, upper]
+        heatmaps[key] = _heatmap_image(values, upper)
+        heatmaps[key].save(directory / f"{key}.png")
+    overlap = _overlap_image(
+        maps["pooled_raw_field"], maps["pooled_gt_rgb"], top_fraction, input_image.size
+    )
+    overlap.save(directory / "raw_field_top20_overlap.png")
+    panel_path = directory / "representation_panel.png"
+    _panel(
+        [
+            input_image, gt_image, heatmaps["gt_rgb_demand"],
+            heatmaps["raw_field_magnitude"], heatmaps["anchor_deviation"],
+            heatmaps["gradient_magnitude"], overlap, heatmaps["gt_e00_demand"],
+        ],
+        [
+            "Input I", "GT Y", "Reference ||Y-I||_2",
+            "UICF coefficient-field magnitude ||R(x)||", "Anchor ||I-b||_2",
+            "RGB Sobel gradient", "Raw R Top-20 overlap", "DeltaE00(I,Y)",
+        ],
+        panel_path,
+    )
+    atomic_json(
+        directory / "representation_metadata.json",
+        {
+            "sample_id": sample.sample_id,
+            "sample_index": sample.index,
+            "filename": sample.filename,
+            "selection_type": selection_type,
+            "metrics": {key: row.get(key) for key in PER_SAMPLE_FIELDS},
+            "chromatic_anchor_b": [float(value) for value in sample.chromatic_anchor.reshape(-1)],
+            "display_normalization_ranges": display_ranges,
+            "quantitative_normalization": "none",
+            "raw_field_interpretation": (
+                "R(x) is the UICF coefficient field and is not interpreted as "
+                "the RGB target residual"
+            ),
+            "top_overlap_colors": {
+                "reference_only": "orange",
+                "R_field_only": "blue",
+                "overlap": "green",
+            },
+        },
+    )
     return panel_path
 
 
@@ -1174,6 +1612,74 @@ def save_metric_plots(rows: Sequence[Mapping[str, Any]], output_dir: Path) -> No
         draw.text((220, 300), "No valid real/null pairs", fill="black")
     image.save(output_dir / "real_vs_null_spearman.png", dpi=(200, 200))
 
+    def histogram(field: str, path: str, label: str) -> None:
+        values = [float(row[field]) for row in rows if row.get(field) is not None]
+        image = Image.new("RGB", (800, 520), "white")
+        draw = ImageDraw.Draw(image)
+        if values:
+            counts, _ = np.histogram(
+                values, bins=min(30, max(5, round(math.sqrt(len(values))))), range=(-1.0, 1.0)
+            )
+            maximum = max(1, int(counts.max()))
+            left, right, top, bottom = 72, 770, 42, 452
+            draw.line((left, top, left, bottom, right, bottom), fill="black", width=2)
+            width = (right - left) / len(counts)
+            for index, count in enumerate(counts):
+                x0, x1 = round(left + index * width), round(left + (index + 1) * width) - 1
+                y0 = round(bottom - int(count) / maximum * (bottom - top))
+                draw.rectangle((x0, y0, x1, bottom - 1), fill=(86, 92, 173))
+            draw.text((left + 120, 480), label, fill="black")
+        else:
+            draw.text((270, 250), f"No valid {label}", fill="black")
+        image.save(output_dir / path, dpi=(200, 200))
+
+    histogram(
+        "raw_field_spearman_rgb", "raw_field_spearman_histogram.png",
+        "Raw coefficient-field vs RGB-demand Spearman",
+    )
+    raw_pairs = [
+        (float(row["raw_field_null_spearman_rgb_mean"]), float(row["raw_field_spearman_rgb"]))
+        for row in rows
+        if row.get("raw_field_spearman_rgb") is not None
+        and row.get("raw_field_null_spearman_rgb_mean") is not None
+    ]
+    image = Image.new("RGB", (620, 620), "white")
+    draw = ImageDraw.Draw(image)
+    left, right, top, bottom = 72, 590, 35, 550
+    if raw_pairs:
+        draw.rectangle((left, top, right, bottom), outline="black", width=2)
+        draw.line((left, bottom, right, top), fill=(176, 58, 46), width=2)
+        for null_value, real_value in raw_pairs:
+            x = round(left + (null_value + 1.0) / 2.0 * (right - left))
+            y = round(bottom - (real_value + 1.0) / 2.0 * (bottom - top))
+            draw.ellipse((x - 3, y - 3, x + 3, y + 3), fill=(86, 92, 173))
+    else:
+        draw.text((190, 300), "No valid raw-field real/null pairs", fill="black")
+    draw.text((150, 590), "Mean shifted-null raw-field Spearman", fill="black")
+    image.save(output_dir / "raw_field_real_vs_null_spearman.png", dpi=(200, 200))
+
+    control_specs = (
+        ("raw_field_spearman_rgb", "Raw R", (86, 92, 173)),
+        ("anchor_spearman_rgb", "Anchor", (221, 132, 82)),
+        ("gradient_spearman_rgb", "Sobel", (82, 160, 120)),
+    )
+    image = Image.new("RGB", (700, 520), "white")
+    draw = ImageDraw.Draw(image)
+    baseline_y = 440
+    draw.line((75, 40, 75, baseline_y, 660, baseline_y), fill="black", width=2)
+    for index, (field, label, color) in enumerate(control_specs):
+        values = [float(row[field]) for row in rows if row.get(field) is not None]
+        mean = None if not values else float(np.mean(values))
+        x0 = 125 + index * 185
+        if mean is not None:
+            zero = (40 + baseline_y) / 2
+            y = round(zero - mean * (baseline_y - 40) / 2)
+            draw.rectangle((x0, min(y, zero), x0 + 95, max(y, zero)), fill=color)
+            draw.text((x0 + 20, min(y, zero) - 20), f"{mean:.3f}", fill="black")
+        draw.text((x0 + 18, 465), label, fill="black")
+    draw.text((190, 15), "Mean RGB-demand Spearman: representations and controls", fill="black")
+    image.save(output_dir / "representation_vs_controls_spearman.png", dpi=(200, 200))
+
 
 def select_visualization_rows(
     rows: Sequence[Mapping[str, Any]], viz_k: int
@@ -1192,6 +1698,29 @@ def select_visualization_rows(
     return top, representative
 
 
+def select_raw_visualization_rows(
+    rows: Sequence[Mapping[str, Any]], viz_k: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    valid = [dict(row) for row in rows if row.get("raw_field_spearman_rgb") is not None]
+    top = sorted(
+        valid,
+        key=lambda row: (-float(row["raw_field_spearman_rgb"]), int(row["sample_index"])),
+    )[:viz_k]
+    if not valid:
+        return top, []
+    demand_median = float(np.median([float(row["mean_gt_rgb_demand"]) for row in rows]))
+    metric_median = float(np.median([float(row["raw_field_spearman_rgb"]) for row in valid]))
+    candidates = [row for row in valid if float(row["mean_gt_rgb_demand"]) >= demand_median]
+    representative = sorted(
+        candidates,
+        key=lambda row: (
+            abs(float(row["raw_field_spearman_rgb"]) - metric_median),
+            int(row["sample_index"]),
+        ),
+    )[:viz_k]
+    return top, representative
+
+
 def export_visualizations(
     model: UICFPreBackbone,
     dataset: LSUIDataset,
@@ -1206,9 +1735,15 @@ def export_visualizations(
     viz_k: int,
 ) -> dict[str, list[int]]:
     top_rows, representative_rows = select_visualization_rows(rows, viz_k)
-    selections = (("top_alignment", top_rows), ("representative", representative_rows))
+    raw_top, raw_representative = select_raw_visualization_rows(rows, viz_k)
+    selections = (
+        ("top_alignment", top_rows, False),
+        ("representative", representative_rows, False),
+        ("top_raw_field_alignment", raw_top, True),
+        ("representative_raw_field", raw_representative, True),
+    )
     selected_indices: dict[str, list[int]] = {}
-    for selection_type, selected_rows in selections:
+    for selection_type, selected_rows, representation in selections:
         directory = output_dir / selection_type
         directory.mkdir()
         panel_paths: list[Path] = []
@@ -1224,8 +1759,11 @@ def export_visualizations(
                 compare_normal_forward=False,
             )
             folder = directory / f"{rank:02d}_{_safe_sample_id(sample.sample_id)}"
+            save_function = (
+                save_representation_visualization if representation else save_alignment_visualization
+            )
             panel_paths.append(
-                save_alignment_visualization(
+                save_function(
                     sample,
                     row,
                     folder,
@@ -1262,7 +1800,7 @@ def _prepare_output_directory(
         contains_protected = any(
             item == resolved or item.is_relative_to(resolved) for item in protected
         )
-        default_output = (run_dir / "result" / "uicf_alignment").resolve()
+        default_output = (run_dir / "result" / "uicf_representation_alignment").resolve()
         nonempty_unmarked_custom = (
             resolved != default_output
             and any(output_dir.iterdir())
@@ -1276,7 +1814,8 @@ def _prepare_output_directory(
 
 def _write_summary_text(summary: Mapping[str, Any], path: Path) -> None:
     lines = [
-        f"v16 UICF Spatial Restoration-Demand Alignment — {summary['dataset']} test set",
+        f"v16 UICF Representation-Level Analysis — {summary['dataset']} test set",
+        f"Evaluation mode: {summary.get('evaluation_mode', 'in_domain')}",
         f"Train/validation/test counts: {summary['train_count']}/"
         f"{summary['validation_count']}/{summary['test_count']}",
         f"Total test samples: {summary['total_test_samples']}",
@@ -1286,6 +1825,15 @@ def _write_summary_text(summary: Mapping[str, Any], path: Path) -> None:
         "Dataset metrics (mean / std / median / valid):",
     ]
     for name, values in summary["metrics"].items():
+        if values["mean"] is None:
+            lines.append(f"{name}: undefined / valid=0")
+        else:
+            lines.append(
+                f"{name}: {values['mean']:.8f} / {values['std']:.8f} / "
+                f"{values['median']:.8f} / valid={values['valid_count']}"
+            )
+    lines.extend(("", "Raw coefficient-field representation (R is not an RGB residual):"))
+    for name, values in summary["raw_field_representation"]["metrics"].items():
         if values["mean"] is None:
             lines.append(f"{name}: undefined / valid=0")
         else:
@@ -1322,9 +1870,32 @@ def _protocol(
     amp_enabled: bool,
     num_workers: int,
     dataset_name: str,
-    split_counts: Mapping[str, int],
+    split_counts: Mapping[str, int | None],
+    checkpoint_dataset: str,
+    evaluation_mode: str,
+    evaluation_config_path: Path | None,
+    model: UICFPreBackbone,
 ) -> dict[str, Any]:
     evaluation = config["evaluation"]
+    uicf_config = config["model"]["uicf"]
+    canonical = UnderwaterImplicitCorrectionField(
+        feat_dim=int(uicf_config["feat_dim"]),
+        num_frequencies=int(uicf_config["num_frequencies"]),
+        mlp_hidden_dim=int(uicf_config["mlp_hidden_dim"]),
+        mlp_hidden_layers=int(uicf_config["mlp_hidden_layers"]),
+        anchor_hidden_dim=int(uicf_config["anchor_hidden_dim"]),
+        query_chunk_size=(
+            None if uicf_config["query_chunk_size"] is None
+            else int(uicf_config["query_chunk_size"])
+        ),
+    )
+    parameter_match = correction_parameter_report(canonical, model.uicf)
+    implicit_predictor = canonical.field_mlp
+    candidate_predictor = getattr(model.uicf, "field_predictor", None)
+    if candidate_predictor is None:
+        candidate_predictor = getattr(model.uicf, "field_mlp")
+    predictor_match = correction_parameter_report(implicit_predictor, candidate_predictor)
+    field_variant = str(getattr(model.uicf, "field_variant", "implicit"))
     return {
         "script": "tools/analyze_uicf_alignment.py",
         "script_version": SCRIPT_VERSION,
@@ -1337,8 +1908,17 @@ def _protocol(
         "config_resolved_yaml": str(config_path),
         "config_resolved_yaml_sha256": sha256_file(config_path),
         "dataset": dataset_name,
-        "train_count": int(split_counts["train"]),
-        "validation_count": int(split_counts["validation"]),
+        "checkpoint_dataset": checkpoint_dataset,
+        "evaluation_dataset": dataset_name,
+        "evaluation_mode": evaluation_mode,
+        "checkpoint_run": str(run_dir),
+        "evaluation_manifest": str(manifest_path),
+        "evaluation_config": None if evaluation_config_path is None else str(evaluation_config_path),
+        "evaluation_config_sha256": (
+            None if evaluation_config_path is None else sha256_file(evaluation_config_path)
+        ),
+        "train_count": None if split_counts.get("train") is None else int(split_counts["train"]),
+        "validation_count": None if split_counts.get("validation") is None else int(split_counts["validation"]),
         "test_count": int(split_counts["test"]),
         "test_manifest": str(manifest_path),
         "test_manifest_sha256": sha256_file(manifest_path),
@@ -1362,11 +1942,34 @@ def _protocol(
         "amp_enabled": amp_enabled,
         "rgb_demand_definition": "D_gt_rgb(p) = ||Y(p) - I(p)||_2",
         "uicf_correction_definition": "D_uicf(p) = ||I_c(p) - I(p)||_2, where I_c = I + R(x)*(I-b)",
-        "raw_field_definition": "D_raw_R(p) = ||R(p)||_2; supplementary only",
+        "analysis_target": (
+            "UICF implicit coefficient representation R(x)"
+            if field_variant == "implicit"
+            else "parameter-matched convolutional coefficient representation R_conv(x)"
+        ),
+        "raw_field_definition": "D_R(p) = ||R(p)||_2",
+        "reference_rgb_demand": "D_ref_rgb(p) = ||Y(p)-I(p)||_2",
+        "anchor_control": "D_anchor(p) = ||I(p)-b||_2",
+        "gradient_control": "per-channel RGB Sobel magnitude with 3x3 kernels /8 and reflect padding",
+        "actual_effect_definition": "D_uicf(p) = ||I_c(p)-I(p)||_2",
+        "raw_field_interpretation": "R(x) is not interpreted as the RGB target residual",
+        "field_variant": field_variant,
+        "use_spatial_conditioning": bool(
+            getattr(model.uicf, "use_spatial_conditioning", True)
+        ),
+        "use_global_field_conditioning": bool(
+            getattr(model.uicf, "use_global_field_conditioning", True)
+        ),
+        "use_learned_anchor": bool(getattr(model.uicf, "use_learned_anchor", True)),
+        "correction_module_parameter_match": parameter_match,
+        "field_predictor_parameter_match": predictor_match,
         "spearman_implementation": "custom deterministic average-tie ranks followed by Pearson correlation",
         "e00_implementation": e00_protocol(dict(config["metrics"])),
         "direction_definition": "mean RGB-vector cosine on top-GT-demand patches where both vector norms exceed eps",
-        "null_control": "deterministic nonzero large circular shifts of pooled UICF scalar/vector maps",
+        "null_control": (
+            "same deterministic nonzero large circular shifts per sample for actual effect, "
+            "raw coefficient field, anchor deviation, and Sobel controls"
+        ),
         "normalization_policy": "no visualization normalization is used for quantitative metrics",
         "visualization_normalization": f"independent nonnegative heatmap ranges at percentile {args.robust_percentile:g}",
         "representative_selection": "closest to valid dataset-median Spearman among samples with GT RGB demand >= dataset median",
@@ -1387,14 +1990,30 @@ def main(argv: list[str] | None = None) -> None:
             f"{config['experiment']['version']!r}"
         )
     supported_datasets = {"LSUI19", "UIEB"}
-    dataset_name = str(config["data"].get("dataset", "")).strip()
+    checkpoint_dataset = str(config["data"].get("dataset", "")).strip()
+    evaluation_config_path: Path | None = None
+    evaluation_config = config
+    evaluation_mode = "in_domain"
+    if args.evaluation_config is not None:
+        evaluation_config_path = project_path(args.evaluation_config).expanduser().resolve()
+        if not evaluation_config_path.is_file():
+            raise FileNotFoundError(f"Evaluation config does not exist: {evaluation_config_path}")
+        evaluation_config = load_yaml(evaluation_config_path)
+        evaluation_mode = "cross_dataset"
+    dataset_name = str(evaluation_config["data"].get("dataset", "")).strip()
     if dataset_name not in supported_datasets:
         raise ValueError(
             f"Alignment analysis supports {sorted(supported_datasets)}, got {dataset_name!r}"
         )
+    if checkpoint_dataset not in supported_datasets:
+        raise ValueError(
+            f"Checkpoint dataset must be one of {sorted(supported_datasets)}, "
+            f"got {checkpoint_dataset!r}"
+        )
+    evaluation_data = dict(evaluation_config["data"])
     if args.data_root is not None:
-        config["data"]["root"] = str(Path(args.data_root).expanduser().resolve())
-    data_root = Path(config["data"]["root"]).expanduser().resolve()
+        evaluation_data["root"] = str(Path(args.data_root).expanduser().resolve())
+    data_root = Path(evaluation_data["root"]).expanduser().resolve()
     if not data_root.is_dir():
         raise FileNotFoundError(f"data.root is unavailable: {data_root}")
 
@@ -1402,21 +2021,44 @@ def main(argv: list[str] | None = None) -> None:
     checkpoint_path = _checkpoint_path(run_dir, selector)
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint_path}")
-    snapshot = run_dir / "split_snapshot"
-    manifests = {name: snapshot / f"{name}.tsv" for name in ("train", "validation", "test")}
-    split_entries = validate_split_protocol(manifests, config["data"].get("expected_counts"))
-    split_counts = {name: len(entries) for name, entries in split_entries.items()}
-    test_entries = split_entries["test"]
-    data = config["data"]
+    if evaluation_mode == "in_domain":
+        snapshot = run_dir / "split_snapshot"
+        manifests = {name: snapshot / f"{name}.tsv" for name in ("train", "validation", "test")}
+        split_entries = validate_split_protocol(
+            manifests, evaluation_data.get("expected_counts")
+        )
+        split_counts: dict[str, int | None] = {
+            name: len(entries) for name, entries in split_entries.items()
+        }
+        test_entries = split_entries["test"]
+        test_manifest = manifests["test"]
+    else:
+        test_manifest = project_path(evaluation_data["test_manifest"]).expanduser().resolve()
+        test_entries = read_manifest(test_manifest)
+        for field in ("sample_id", "input_relative", "gt_relative"):
+            values = [getattr(entry, field) for entry in test_entries]
+            if len(values) != len(set(values)):
+                raise ValueError(f"Duplicate {field} in external test manifest")
+        expected_counts = evaluation_data.get("expected_counts")
+        if expected_counts is None or "test" not in expected_counts:
+            raise ValueError("Cross-dataset evaluation requires data.expected_counts.test")
+        expected_test = int(expected_counts["test"])
+        if len(test_entries) != expected_test:
+            raise ValueError(
+                f"test count is {len(test_entries)}, expected {expected_test}"
+            )
+        verify_image_entries(test_entries, data_root, "test")
+        split_counts = {"train": None, "validation": None, "test": len(test_entries)}
+    data = evaluation_data
     test_dataset = LSUIDataset(
-        manifests["test"],
+        test_manifest,
         data_root,
         "test",
         int(data["patch_size"]),
         data["augmentation"],
         bool(data["pad_if_smaller"]),
         str(data["pad_mode"]),
-        config["evaluation"],
+        evaluation_config["evaluation"],
         # Per-item checks are performed by SafeAlignmentDataset so every bad
         # manifest row is represented in failed_samples.csv rather than dropped.
         verify_files=False,
@@ -1425,7 +2067,7 @@ def main(argv: list[str] | None = None) -> None:
         raise RuntimeError("Validated test manifest order differs from Dataset order")
 
     output_dir = (
-        run_dir / "result" / "uicf_alignment"
+        run_dir / "result" / "uicf_representation_alignment"
         if args.output_dir is None
         else project_path(args.output_dir).expanduser().resolve()
     ).resolve()
@@ -1446,8 +2088,8 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint_path=checkpoint_path,
         checkpoint=checkpoint,
         config_path=config_path,
-        manifest_path=manifests["test"],
-        config=config,
+        manifest_path=test_manifest,
+        config={**config, "evaluation": evaluation_config["evaluation"]},
         data_root=data_root,
         selector=selector,
         amp_requested=amp_requested,
@@ -1455,6 +2097,10 @@ def main(argv: list[str] | None = None) -> None:
         num_workers=num_workers,
         dataset_name=dataset_name,
         split_counts=split_counts,
+        checkpoint_dataset=checkpoint_dataset,
+        evaluation_mode=evaluation_mode,
+        evaluation_config_path=evaluation_config_path,
+        model=model,
     )
     atomic_json(output_dir / "protocol.json", protocol)
 
@@ -1486,6 +2132,24 @@ def main(argv: list[str] | None = None) -> None:
         row["rank"] = rank
     _write_csv(output_dir / "ranking_by_spearman.csv", ranked, ["rank", *PER_SAMPLE_FIELDS])
     _write_csv(output_dir / "null_control_summary.csv", rows, NULL_FIELDS)
+    raw_ranked = sorted(
+        (dict(row) for row in rows),
+        key=lambda row: (
+            row.get("raw_field_spearman_rgb") is None,
+            -float(row["raw_field_spearman_rgb"])
+            if row.get("raw_field_spearman_rgb") is not None else 0.0,
+            int(row["sample_index"]),
+        ),
+    )
+    for rank, row in enumerate(raw_ranked, 1):
+        row["rank"] = rank
+    _write_csv(
+        output_dir / "ranking_by_raw_field_spearman.csv",
+        raw_ranked,
+        ["rank", *PER_SAMPLE_FIELDS],
+    )
+    _write_csv(output_dir / "raw_field_null_control_summary.csv", rows, RAW_NULL_FIELDS)
+    _write_csv(output_dir / "representation_baseline_summary.csv", rows, BASELINE_FIELDS)
 
     summary = build_summary(
         rows,
@@ -1493,13 +2157,33 @@ def main(argv: list[str] | None = None) -> None:
         dataset_name=dataset_name,
         split_counts=split_counts,
         data_root=data_root,
-        test_manifest=manifests["test"],
+        test_manifest=test_manifest,
         bootstrap_samples=args.bootstrap_samples,
         bootstrap_seed=args.bootstrap_seed,
+    )
+    summary.update(
+        {
+            "checkpoint_dataset": checkpoint_dataset,
+            "evaluation_dataset": dataset_name,
+            "evaluation_mode": evaluation_mode,
+            "checkpoint_run": str(run_dir),
+            "evaluation_manifest": str(test_manifest),
+            "field_variant": protocol["field_variant"],
+            "use_spatial_conditioning": protocol["use_spatial_conditioning"],
+            "use_global_field_conditioning": protocol["use_global_field_conditioning"],
+            "use_learned_anchor": protocol["use_learned_anchor"],
+            "correction_module_parameter_match": protocol[
+                "correction_module_parameter_match"
+            ],
+        }
     )
     # Preserve the complete quantitative result before optional second-pass
     # visualization.  A later image-export error must not discard the metrics.
     atomic_json(output_dir / "summary.json", summary)
+    atomic_json(
+        output_dir / "representation_bootstrap_summary.json",
+        summary["representation_bootstrap"],
+    )
     _write_summary_text(summary, output_dir / "summary.txt")
     selected = export_visualizations(
         model,
