@@ -138,7 +138,7 @@ class OptionalMetric:
 
 
 class SafeAlignmentDataset(Dataset[dict[str, Any]]):
-    """Preserve manifest identity when an individual LSUI item fails to load."""
+    """Preserve manifest identity when an individual paired-TSV item fails to load."""
 
     def __init__(self, dataset: LSUIDataset) -> None:
         self.dataset = dataset
@@ -882,7 +882,10 @@ def build_summary(
     rows: Sequence[Mapping[str, Any]],
     failures: Sequence[Mapping[str, Any]],
     *,
-    manifest_count: int,
+    dataset_name: str,
+    split_counts: Mapping[str, int],
+    data_root: Path,
+    test_manifest: Path,
     bootstrap_samples: int,
     bootstrap_seed: int,
 ) -> dict[str, Any]:
@@ -927,7 +930,13 @@ def build_summary(
         bootstrap[f"{name}_ci95_low"] = result["ci95_low"]
         bootstrap[f"{name}_ci95_high"] = result["ci95_high"]
     return {
-        "total_test_samples": manifest_count,
+        "dataset": dataset_name,
+        "train_count": int(split_counts["train"]),
+        "validation_count": int(split_counts["validation"]),
+        "test_count": int(split_counts["test"]),
+        "data_root": str(data_root),
+        "test_manifest": str(test_manifest),
+        "total_test_samples": int(split_counts["test"]),
         "processed_sample_count": len(rows) + len(failures),
         "successful_sample_count": len(rows),
         "failed_sample_count": len(failures),
@@ -1267,7 +1276,9 @@ def _prepare_output_directory(
 
 def _write_summary_text(summary: Mapping[str, Any], path: Path) -> None:
     lines = [
-        "v16 UICF Spatial Restoration-Demand Alignment",
+        f"v16 UICF Spatial Restoration-Demand Alignment — {summary['dataset']} test set",
+        f"Train/validation/test counts: {summary['train_count']}/"
+        f"{summary['validation_count']}/{summary['test_count']}",
         f"Total test samples: {summary['total_test_samples']}",
         f"Successful: {summary['successful_sample_count']}",
         f"Failed: {summary['failed_sample_count']}",
@@ -1310,7 +1321,8 @@ def _protocol(
     amp_requested: bool,
     amp_enabled: bool,
     num_workers: int,
-    test_count: int,
+    dataset_name: str,
+    split_counts: Mapping[str, int],
 ) -> dict[str, Any]:
     evaluation = config["evaluation"]
     return {
@@ -1324,9 +1336,13 @@ def _protocol(
         "checkpoint_sha256": sha256_file(checkpoint_path),
         "config_resolved_yaml": str(config_path),
         "config_resolved_yaml_sha256": sha256_file(config_path),
+        "dataset": dataset_name,
+        "train_count": int(split_counts["train"]),
+        "validation_count": int(split_counts["validation"]),
+        "test_count": int(split_counts["test"]),
         "test_manifest": str(manifest_path),
         "test_manifest_sha256": sha256_file(manifest_path),
-        "test_manifest_sample_count": test_count,
+        "test_manifest_sample_count": int(split_counts["test"]),
         "data_root": str(data_root),
         "paired_file_verification": (
             "every manifest item checks existence/readability/RGB/pair dimensions and "
@@ -1370,8 +1386,12 @@ def main(argv: list[str] | None = None) -> None:
             f"{EXPECTED_VERSION} alignment analysis refuses run version "
             f"{config['experiment']['version']!r}"
         )
-    if config["data"].get("dataset") not in (None, "LSUI19"):
-        raise ValueError(f"Alignment analysis requires LSUI19, got {config['data'].get('dataset')!r}")
+    supported_datasets = {"LSUI19", "UIEB"}
+    dataset_name = str(config["data"].get("dataset", "")).strip()
+    if dataset_name not in supported_datasets:
+        raise ValueError(
+            f"Alignment analysis supports {sorted(supported_datasets)}, got {dataset_name!r}"
+        )
     if args.data_root is not None:
         config["data"]["root"] = str(Path(args.data_root).expanduser().resolve())
     data_root = Path(config["data"]["root"]).expanduser().resolve()
@@ -1385,6 +1405,7 @@ def main(argv: list[str] | None = None) -> None:
     snapshot = run_dir / "split_snapshot"
     manifests = {name: snapshot / f"{name}.tsv" for name in ("train", "validation", "test")}
     split_entries = validate_split_protocol(manifests, config["data"].get("expected_counts"))
+    split_counts = {name: len(entries) for name, entries in split_entries.items()}
     test_entries = split_entries["test"]
     data = config["data"]
     test_dataset = LSUIDataset(
@@ -1432,7 +1453,8 @@ def main(argv: list[str] | None = None) -> None:
         amp_requested=amp_requested,
         amp_enabled=amp_enabled,
         num_workers=num_workers,
-        test_count=len(test_entries),
+        dataset_name=dataset_name,
+        split_counts=split_counts,
     )
     atomic_json(output_dir / "protocol.json", protocol)
 
@@ -1468,7 +1490,10 @@ def main(argv: list[str] | None = None) -> None:
     summary = build_summary(
         rows,
         failures,
-        manifest_count=len(test_entries),
+        dataset_name=dataset_name,
+        split_counts=split_counts,
+        data_root=data_root,
+        test_manifest=manifests["test"],
         bootstrap_samples=args.bootstrap_samples,
         bootstrap_seed=args.bootstrap_seed,
     )
@@ -1493,7 +1518,7 @@ def main(argv: list[str] | None = None) -> None:
     atomic_json(output_dir / "summary.json", summary)
     _write_summary_text(summary, output_dir / "summary.txt")
     print(
-        "\nv16 UICF alignment analysis completed\n"
+        f"\n{dataset_name} v16 UICF alignment analysis completed\n"
         f"Total samples: {len(test_entries)}\n"
         f"Successful samples: {len(rows)}\n"
         f"Failed samples: {len(failures)}\n"

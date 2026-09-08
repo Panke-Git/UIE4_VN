@@ -156,9 +156,12 @@ def test_csv_serialization_uses_blank_for_none_and_rejects_nonfinite(tmp_path: P
         _write_csv(path, [{"sample_id": "bad", "score": float("inf")}], ["sample_id", "score"])
 
 
-def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(tmp_path: Path) -> None:
+@pytest.mark.parametrize("dataset_name", ("LSUI19", "UIEB"))
+def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(
+    tmp_path: Path, dataset_name: str
+) -> None:
     run_dir = tmp_path / "v16_alignment_run"
-    data_root = tmp_path / "LSUI19"
+    data_root = tmp_path / dataset_name
     (run_dir / "best").mkdir(parents=True)
     (run_dir / "split_snapshot").mkdir()
     for directory in (data_root / "input", data_root / "gt"):
@@ -187,6 +190,7 @@ def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(tmp_path: Path) -> N
     config["model"] = _small_model_config()
     config["data"] = {
         **config["data"],
+        "dataset": dataset_name,
         "root": str(data_root),
         "expected_counts": {split: len(ids) for split, ids in split_ids.items()},
         "num_workers": 0,
@@ -246,6 +250,14 @@ def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(tmp_path: Path) -> N
     }
     assert required <= {path.name for path in output.iterdir()}
     summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+    assert summary["dataset"] == dataset_name
+    assert (summary["train_count"], summary["validation_count"], summary["test_count"]) == (
+        1,
+        1,
+        1,
+    )
+    assert summary["data_root"] == str(data_root)
+    assert summary["test_manifest"] == str(run_dir / "split_snapshot" / "test.tsv")
     assert summary["total_test_samples"] == 1
     assert summary["processed_sample_count"] == 1
     assert summary["successful_sample_count"] == 1
@@ -253,7 +265,16 @@ def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(tmp_path: Path) -> N
     assert summary["valid_sample_counts"]["spearman_rgb"] == 0
     assert summary["metrics"]["spearman_rgb"]["invalid_count"] == 1
     protocol = json.loads((output / "protocol.json").read_text(encoding="utf-8"))
+    assert protocol["dataset"] == dataset_name
+    assert (protocol["train_count"], protocol["validation_count"], protocol["test_count"]) == (
+        1,
+        1,
+        1,
+    )
+    assert protocol["data_root"] == str(data_root)
+    assert protocol["test_manifest"] == str(run_dir / "split_snapshot" / "test.tsv")
     assert protocol["checkpoint_selector"] == "best_psnr"
     assert protocol["test_manifest_sample_count"] == 1
+    assert f"{dataset_name} test set" in (output / "summary.txt").read_text(encoding="utf-8")
     csv_text = (output / "per_sample_metrics.csv").read_text(encoding="utf-8").lower()
     assert "nan" not in csv_text
