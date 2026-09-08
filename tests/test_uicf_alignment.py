@@ -22,6 +22,7 @@ from tools.analyze_uicf_alignment import (
     main as alignment_main,
     pearson_correlation,
     per_pixel_delta_e00_map,
+    resolve_dataset_name,
     spearman_correlation,
     top_fraction_overlap,
 )
@@ -156,9 +157,62 @@ def test_csv_serialization_uses_blank_for_none_and_rejects_nonfinite(tmp_path: P
         _write_csv(path, [{"sample_id": "bad", "score": float("inf")}], ["sample_id", "score"])
 
 
-@pytest.mark.parametrize("dataset_name", ("LSUI19", "UIEB"))
+def test_dataset_resolver_accepts_modern_lsui() -> None:
+    assert resolve_dataset_name(
+        {"dataset": "LSUI19", "root": "/unrelated"}, context="test config"
+    ) == "LSUI19"
+
+
+@pytest.mark.parametrize(
+    ("data_config", "expected"),
+    (
+        (
+            {
+                "root": "/datasets/LSUI19_dup_train",
+                "test_manifest": "split/lsui19/test.tsv",
+            },
+            "LSUI19",
+        ),
+        (
+            {"root": "/datasets/UIEB19", "test_manifest": "split/uieb/test.tsv"},
+            "UIEB",
+        ),
+    ),
+)
+def test_dataset_resolver_infers_unambiguous_legacy_metadata(
+    data_config: dict, expected: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert resolve_dataset_name(data_config, context="legacy test config") == expected
+    warning = capsys.readouterr().err
+    assert "[WARNING] legacy test config has no data.dataset" in warning
+    assert f"inferred legacy dataset as '{expected}'" in warning
+
+
+def test_dataset_resolver_rejects_conflicting_legacy_metadata() -> None:
+    with pytest.raises(ValueError, match="conflicting legacy dataset evidence"):
+        resolve_dataset_name(
+            {"root": "/datasets/LSUI19", "test_manifest": "split/uieb/test.tsv"},
+            context="legacy test config",
+        )
+
+
+def test_dataset_resolver_rejects_unknown_legacy_metadata() -> None:
+    with pytest.raises(ValueError, match="no unambiguous LSUI19 or UIEB evidence"):
+        resolve_dataset_name(
+            {"root": "/datasets/paired", "test_manifest": "split/test.tsv"},
+            context="legacy test config",
+        )
+
+
+@pytest.mark.parametrize(
+    ("dataset_name", "legacy"),
+    (("LSUI19", False), ("UIEB", False), ("LSUI19", True)),
+)
 def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(
-    tmp_path: Path, dataset_name: str
+    tmp_path: Path,
+    dataset_name: str,
+    legacy: bool,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     run_dir = tmp_path / "v16_alignment_run"
     data_root = tmp_path / dataset_name
@@ -195,6 +249,8 @@ def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(
         "expected_counts": {split: len(ids) for split, ids in split_ids.items()},
         "num_workers": 0,
     }
+    if legacy:
+        del config["data"]["dataset"]
     config["evaluation"] = {"resize": True, "size": 16}
     (run_dir / "config_resolved.yaml").write_text(
         yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
@@ -274,6 +330,8 @@ def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(
     assert summary["successful_sample_count"] == 1
     assert summary["failed_sample_count"] == 0
     assert summary["evaluation_mode"] == "in_domain"
+    assert summary["checkpoint_dataset"] == dataset_name
+    assert summary["evaluation_dataset"] == dataset_name
     assert "raw_field_representation" in summary
     assert "baseline_controls" in summary
     assert "paired_representation_comparisons" in summary
@@ -281,6 +339,8 @@ def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(
     assert summary["metrics"]["spearman_rgb"]["invalid_count"] == 1
     protocol = json.loads((output / "protocol.json").read_text(encoding="utf-8"))
     assert protocol["dataset"] == dataset_name
+    assert protocol["checkpoint_dataset"] == dataset_name
+    assert protocol["evaluation_dataset"] == dataset_name
     assert (protocol["train_count"], protocol["validation_count"], protocol["test_count"]) == (
         1,
         1,
@@ -298,3 +358,6 @@ def test_tiny_zero_uicf_cli_smoke_run_writes_complete_audit(
     assert f"{dataset_name} test set" in (output / "summary.txt").read_text(encoding="utf-8")
     csv_text = (output / "per_sample_metrics.csv").read_text(encoding="utf-8").lower()
     assert "nan" not in csv_text
+    if legacy:
+        captured = capsys.readouterr()
+        assert captured.err.count("inferred legacy dataset as 'LSUI19'") == 1

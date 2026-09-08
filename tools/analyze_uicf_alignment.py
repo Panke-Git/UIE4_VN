@@ -75,6 +75,7 @@ from tools.visualize_v16_uicf import (
 SCRIPT_VERSION = "2.0"
 EXPECTED_VERSION = "v16"
 EPSILON = 1e-12
+SUPPORTED_DATASETS = frozenset({"LSUI19", "UIEB"})
 PER_SAMPLE_FIELDS = [
     "sample_index",
     "sample_id",
@@ -258,6 +259,54 @@ class SafeAlignmentDataset(Dataset[dict[str, Any]]):
 
 def _list_collate(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return items
+
+
+def resolve_dataset_name(
+    data_config: Mapping[str, Any], *, context: str
+) -> str:
+    """Resolve modern or legacy dataset identity without mutating frozen config."""
+
+    configured = str(data_config.get("dataset", "")).strip()
+    if configured:
+        if configured not in SUPPORTED_DATASETS:
+            raise ValueError(
+                f"{context} data.dataset must be one of "
+                f"{sorted(SUPPORTED_DATASETS)}, got {configured!r}"
+            )
+        return configured
+
+    evidence: set[str] = set()
+    manifest_keys = ("train_manifest", "validation_manifest", "test_manifest")
+    for key in manifest_keys:
+        normalized = str(data_config.get(key, "")).replace("\\", "/").lower()
+        tokens = {token for token in normalized.split("/") if token}
+        if "lsui19" in normalized or "lsui" in tokens:
+            evidence.add("LSUI19")
+        if "uieb" in normalized:
+            evidence.add("UIEB")
+    normalized_root = str(data_config.get("root", "")).replace("\\", "/").lower()
+    if "lsui" in normalized_root:
+        evidence.add("LSUI19")
+    if "uieb" in normalized_root:
+        evidence.add("UIEB")
+
+    if len(evidence) > 1:
+        raise ValueError(
+            f"{context} has conflicting legacy dataset evidence in data root/manifests: "
+            f"{sorted(evidence)}"
+        )
+    if not evidence:
+        raise ValueError(
+            f"{context} has no data.dataset and its data root/manifests contain no "
+            "unambiguous LSUI19 or UIEB evidence"
+        )
+    inferred = next(iter(evidence))
+    print(
+        f"[WARNING] {context} has no data.dataset; inferred legacy dataset as "
+        f"{inferred!r} from data root/manifest metadata.",
+        file=sys.stderr,
+    )
+    return inferred
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1989,8 +2038,9 @@ def main(argv: list[str] | None = None) -> None:
             f"{EXPECTED_VERSION} alignment analysis refuses run version "
             f"{config['experiment']['version']!r}"
         )
-    supported_datasets = {"LSUI19", "UIEB"}
-    checkpoint_dataset = str(config["data"].get("dataset", "")).strip()
+    checkpoint_dataset = resolve_dataset_name(
+        config["data"], context="checkpoint config"
+    )
     evaluation_config_path: Path | None = None
     evaluation_config = config
     evaluation_mode = "in_domain"
@@ -2000,16 +2050,13 @@ def main(argv: list[str] | None = None) -> None:
             raise FileNotFoundError(f"Evaluation config does not exist: {evaluation_config_path}")
         evaluation_config = load_yaml(evaluation_config_path)
         evaluation_mode = "cross_dataset"
-    dataset_name = str(evaluation_config["data"].get("dataset", "")).strip()
-    if dataset_name not in supported_datasets:
-        raise ValueError(
-            f"Alignment analysis supports {sorted(supported_datasets)}, got {dataset_name!r}"
+    dataset_name = (
+        checkpoint_dataset
+        if evaluation_mode == "in_domain"
+        else resolve_dataset_name(
+            evaluation_config["data"], context="evaluation config"
         )
-    if checkpoint_dataset not in supported_datasets:
-        raise ValueError(
-            f"Checkpoint dataset must be one of {sorted(supported_datasets)}, "
-            f"got {checkpoint_dataset!r}"
-        )
+    )
     evaluation_data = dict(evaluation_config["data"])
     if args.data_root is not None:
         evaluation_data["root"] = str(Path(args.data_root).expanduser().resolve())
