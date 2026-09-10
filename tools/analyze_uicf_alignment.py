@@ -1625,10 +1625,20 @@ def save_metric_plots(rows: Sequence[Mapping[str, Any]], output_dir: Path) -> No
         draw.line((plot_left, plot_top, plot_left, plot_bottom, plot_right, plot_bottom), fill="black", width=2)
         bin_width = (plot_right - plot_left) / bin_count
         for index, count in enumerate(counts):
+            if int(count) <= 0:
+                continue
             left = round(plot_left + index * bin_width)
             right = round(plot_left + (index + 1) * bin_width) - 1
             top = round(plot_bottom - int(count) / maximum * (plot_bottom - plot_top))
-            draw.rectangle((left, top, right, plot_bottom - 1), fill=(53, 114, 165), outline="white")
+            bottom_coordinate = plot_bottom - 1
+            top = min(top, bottom_coordinate)
+            if right < left or bottom_coordinate < top:
+                continue
+            draw.rectangle(
+                (left, top, right, bottom_coordinate),
+                fill=(53, 114, 165),
+                outline="white",
+            )
         draw.text((plot_left, plot_bottom + 20), "-1", fill="black")
         draw.text((plot_right - 10, plot_bottom + 20), "1", fill="black")
         draw.text((plot_left + 180, height - 30), "Per-image Spearman: UICF effect vs GT RGB demand", fill="black")
@@ -1674,9 +1684,15 @@ def save_metric_plots(rows: Sequence[Mapping[str, Any]], output_dir: Path) -> No
             draw.line((left, top, left, bottom, right, bottom), fill="black", width=2)
             width = (right - left) / len(counts)
             for index, count in enumerate(counts):
+                if int(count) <= 0:
+                    continue
                 x0, x1 = round(left + index * width), round(left + (index + 1) * width) - 1
                 y0 = round(bottom - int(count) / maximum * (bottom - top))
-                draw.rectangle((x0, y0, x1, bottom - 1), fill=(86, 92, 173))
+                y1 = bottom - 1
+                y0 = min(y0, y1)
+                if x1 < x0 or y1 < y0:
+                    continue
+                draw.rectangle((x0, y0, x1, y1), fill=(86, 92, 173))
             draw.text((left + 120, 480), label, fill="black")
         else:
             draw.text((270, 250), f"No valid {label}", fill="black")

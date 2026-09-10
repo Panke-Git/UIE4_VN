@@ -23,6 +23,7 @@ from tools.analyze_uicf_alignment import (
     pearson_correlation,
     per_pixel_delta_e00_map,
     resolve_dataset_name,
+    save_metric_plots,
     spearman_correlation,
     top_fraction_overlap,
 )
@@ -155,6 +156,45 @@ def test_csv_serialization_uses_blank_for_none_and_rejects_nonfinite(tmp_path: P
     assert "nan" not in lowered
     with pytest.raises(FloatingPointError, match="non-finite CSV"):
         _write_csv(path, [{"sample_id": "bad", "score": float("inf")}], ["sample_id", "score"])
+
+
+@pytest.mark.parametrize(
+    "values",
+    (
+        [0.80, 0.81, 0.82, 0.83],
+        [0.82, 0.82, 0.82, 0.82],
+        [0.82],
+        [-1.0, 1.0],
+    ),
+)
+def test_metric_plots_handle_empty_histogram_bins(
+    tmp_path: Path, values: list[float]
+) -> None:
+    rows = [
+        {
+            "spearman_rgb": value,
+            "null_spearman_rgb_mean": 0.0,
+            "raw_field_spearman_rgb": value,
+            "raw_field_null_spearman_rgb_mean": 0.0,
+            "anchor_spearman_rgb": value,
+            "gradient_spearman_rgb": value,
+        }
+        for value in values
+    ]
+    save_metric_plots(rows, tmp_path)
+    expected = {
+        "metric_histogram_spearman.png",
+        "real_vs_null_spearman.png",
+        "raw_field_spearman_histogram.png",
+        "raw_field_real_vs_null_spearman.png",
+        "representation_vs_controls_spearman.png",
+    }
+    assert expected == {path.name for path in tmp_path.iterdir()}
+    for filename in expected:
+        path = tmp_path / filename
+        assert path.stat().st_size > 0
+        with Image.open(path) as image:
+            image.verify()
 
 
 def test_dataset_resolver_accepts_modern_lsui() -> None:
