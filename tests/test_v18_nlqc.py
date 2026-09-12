@@ -12,6 +12,8 @@ from src.shared.color_query_unet import PlainUNetColorQuery, SpatialTokenGuidanc
 from src.shared.uicf_models import UICFPreBackbone
 from src.v16.models import build_model as build_v16
 from src.v18.models import NLQCSpatialTokenGuidance, build_model as build_v18
+from src.v18.models.nlqc_guidance import require_finite_tensor
+from tools.diagnose_v18_numerics import main as diagnose_numerics
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -261,3 +263,134 @@ def test_invalid_nlqc_configuration_fails_clearly(overrides: dict, message: str)
     config["nlqc"].update(overrides)
     with pytest.raises(ValueError, match=message):
         build_v18(config)
+
+
+def test_finite_diagnostic_reports_nan_inf_and_finite_statistics() -> None:
+    injected = torch.tensor([float("nan"), float("inf"), -float("inf"), -3.0, 1.0])
+    with pytest.raises(FloatingPointError) as caught:
+        require_finite_tensor("injected_tensor", injected, context="unit-test")
+    message = str(caught.value)
+    for expected in (
+        "tensor_name=injected_tensor",
+        "shape=(5,)",
+        "dtype=torch.float32",
+        "device=cpu",
+        "num_nan=1",
+        "num_posinf=1",
+        "num_neginf=1",
+        "finite_min=-3",
+        "finite_max=1",
+        "finite_abs_max=3",
+        "finite_mean=-1",
+        "finite_std=2",
+        "context=unit-test",
+    ):
+        assert expected in message
+
+
+def test_finite_diagnostic_handles_no_finite_values_safely() -> None:
+    injected = torch.tensor([float("nan"), float("inf"), -float("inf")])
+    with pytest.raises(FloatingPointError) as caught:
+        require_finite_tensor("all_nonfinite", injected, context="unit-test")
+    message = str(caught.value)
+    assert "finite_count=0" in message
+    for field in (
+        "finite_min",
+        "finite_max",
+        "finite_abs_max",
+        "finite_mean",
+        "finite_std",
+    ):
+        assert f"{field}=N/A" in message
+
+
+def test_runtime_diagnostic_distinguishes_upstream_and_token_failures() -> None:
+    guide = NLQCSpatialTokenGuidance(SpatialTokenGuidance(16, 32, 4, 0.0))
+    spatial_feature = torch.rand(1, 16, 4, 4)
+    tokens = torch.rand(1, 8, 32)
+
+    bad_spatial = spatial_feature.clone()
+    bad_spatial[0, 0, 0, 0] = float("nan")
+    with pytest.raises(FloatingPointError, match="tensor_name=spatial_feature"):
+        guide(bad_spatial, tokens)
+
+    bad_tokens = tokens.clone()
+    bad_tokens[0, 0, 0] = float("inf")
+    with pytest.raises(FloatingPointError, match="tensor_name=tokens"):
+        guide(spatial_feature, bad_tokens)
+
+
+def test_runtime_diagnostic_identifies_amp_boundary_spatial_queries(monkeypatch) -> None:
+    guide = NLQCSpatialTokenGuidance(SpatialTokenGuidance(16, 32, 4, 0.0))
+    spatial_feature = torch.rand(1, 16, 4, 4)
+    tokens = torch.rand(1, 8, 32)
+
+    def nonfinite_projection(value: torch.Tensor) -> torch.Tensor:
+        return torch.full(
+            (value.shape[0], 32, value.shape[2], value.shape[3]),
+            float("inf"),
+            dtype=value.dtype,
+            device=value.device,
+        )
+
+    monkeypatch.setattr(guide.query_projection, "forward", nonfinite_projection)
+    with pytest.raises(FloatingPointError) as caught:
+        guide(spatial_feature, tokens)
+    message = str(caught.value)
+    assert "tensor_name=spatial_queries" in message
+    assert "spatial_feature_dtype=torch.float32" in message
+    assert "spatial_queries_dtype=torch.float32" in message
+    assert "tokens_dtype=torch.float32" in message
+
+
+def test_runtime_diagnostic_identifies_packed_q_projection_overflow() -> None:
+    guide = NLQCSpatialTokenGuidance(SpatialTokenGuidance(16, 32, 4, 0.0))
+    with torch.no_grad():
+        guide.attention.in_proj_weight[:32].fill_(3.0e38)
+    spatial_queries = torch.full((1, 5, 32), 2.0)
+    tokens = torch.zeros(1, 8, 32)
+    with pytest.raises(FloatingPointError) as caught:
+        guide._project_qk_fp32(spatial_queries, tokens)
+    message = str(caught.value)
+    assert "tensor_name=projected_q" in message
+    assert "num_posinf=" in message
+
+
+def test_checkpoint_numerics_tool_reports_model_and_optimizer_nonfinite_state(
+    tmp_path: Path, capsys
+) -> None:
+    run_dir = tmp_path / "v18_run"
+    (run_dir / "checkpoint").mkdir(parents=True)
+    config = {
+        "experiment": {"version": "v18"},
+        "model": _config("v18"),
+        "test": {"checkpoint": "last"},
+    }
+    (run_dir / "config_resolved.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
+    )
+    model = build_v18(config["model"])
+    model_state = model.state_dict()
+    model_state["backbone.guide3.nlqc_alpha"] = torch.tensor(float("nan"))
+    checkpoint = {
+        "epoch": 193,
+        "version": "v18",
+        "model_state_dict": model_state,
+        "optimizer_state_dict": {
+            "state": {0: {"exp_avg": torch.tensor([float("inf")])}},
+            "param_groups": [],
+        },
+    }
+    torch.save(checkpoint, run_dir / "checkpoint" / "last.pt")
+
+    diagnose_numerics(["--run-dir", str(run_dir), "--checkpoint", "last"])
+    output = capsys.readouterr().out
+    assert "checkpoint epoch: 193" in output
+    assert "model_state_dict: status=NON_FINITE" in output
+    assert "optimizer_state_dict: status=NON_FINITE" in output
+    assert "model_state_dict.backbone.guide3.nlqc_alpha" in output
+    assert "optimizer_state_dict.state.0.exp_avg" in output
+    assert "strict model_state_dict load: passed" in output
+    assert "model parameter/floating-buffer max_abs Top-30" in output
+    assert "BatchNorm modules:" in output
+    assert "overall checkpoint numerical status: NON_FINITE" in output
