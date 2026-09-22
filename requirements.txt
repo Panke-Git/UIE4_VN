@@ -2,6 +2,7 @@ numpy
 Pillow
 PyYAML
 matplotlib
+lpips==0.1.4
 pytest
 scikit-image>=0.25,<0.26
 tqdm

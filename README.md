@@ -1,6 +1,6 @@
 # UIE4_VN
 
-UIE4_VN is a self-contained, auditable LSUI underwater-image-enhancement research framework. Its seventeen versions study INR type, position, topology, backbone, and Color-Query decoder guidance under a fixed LSUI protocol.
+UIE4_VN is a self-contained, auditable LSUI underwater-image-enhancement research framework. Its eighteen versions study INR type, position, topology, backbone, Color-Query decoder guidance, and NLQC guidance under fixed protocols.
 
 Versions v1-v6 preserve their original isolated implementations. The pre-INR variants v7-v10 use one thin shared composition wrapper and directly reuse the already-audited v1/v4 backbone and v2/v3 INR classes, so their mathematical implementations cannot drift.
 
@@ -84,7 +84,7 @@ python tools/validate_splits.py
 python -m pytest -q
 ```
 
-The repository does not depend on BasicSR, torchvision model implementations, PyTorch Lightning, Hydra, or an external experiment tracker. CIEDE2000 evaluation uses `scikit-image>=0.25,<0.26`; the metric implementation has been verified with scikit-image 0.25.2.
+The training models do not depend on BasicSR, torchvision model implementations, PyTorch Lightning, Hydra, or an external experiment tracker. Final paper LPIPS evaluation deliberately uses the official `lpips==0.1.4` AlexNet path, which requires a compatible torchvision installation and fixed pretrained weights. CIEDE2000 evaluation uses `scikit-image>=0.25,<0.26`; the metric implementation has been verified with scikit-image 0.25.2.
 
 ## Train
 
@@ -157,6 +157,7 @@ python -m src.v14.test --run-dir experiments/<v14_run> --checkpoint best_psnr --
 python -m src.v15.test --run-dir experiments/<v15_run> --checkpoint best_psnr --gpu 0
 python -m src.v16.test --run-dir experiments/<v16_run> --checkpoint best_psnr --gpu 0
 python -m src.v17.test --run-dir experiments/<v17_run> --checkpoint best_psnr --gpu 0
+python -m src.v18.test --run-dir experiments/<v18_run> --checkpoint best_psnr --gpu 0
 ```
 
 Checkpoint selectors are `best_psnr`, `best_ssim`, `best_loss`, and `last`; an explicit checkpoint path is also accepted. Test allows `--gpu` and `--data-root` overrides but no architecture override. Outputs include all enhanced PNGs, per-image metrics, a summary, ten deterministic sample images, their fixed index manifest, and a 10×3 `input | enhanced | GT` grid.
@@ -180,7 +181,7 @@ cp -a experiments/<run>/result experiments/<run>/result_before_e00
 cp -a experiments/<run>/log/test.log experiments/<run>/log/test_before_e00.log
 ```
 
-Recompute ΔE00 from the original `best_psnr` checkpoints for the primary six versions:
+Recompute ΔE00 from the original `best_psnr` checkpoints for the primary seven versions:
 
 ```bash
 python -m src.v4.test  --run-dir experiments/<v4_run>  --checkpoint best_psnr --gpu 0
@@ -189,6 +190,7 @@ python -m src.v14.test --run-dir experiments/<v14_run> --checkpoint best_psnr --
 python -m src.v15.test --run-dir experiments/<v15_run> --checkpoint best_psnr --gpu 0
 python -m src.v16.test --run-dir experiments/<v16_run> --checkpoint best_psnr --gpu 0
 python -m src.v17.test --run-dir experiments/<v17_run> --checkpoint best_psnr --gpu 0
+python -m src.v18.test --run-dir experiments/<v18_run> --checkpoint best_psnr --gpu 0
 ```
 
 Summarize the refreshed results; old summaries without `mean_e00` display `N/A`:
@@ -196,8 +198,87 @@ Summarize the refreshed results; old summaries without `mean_e00` display `N/A`:
 ```bash
 python tools/compare_runs.py \
   experiments/<v4_run> experiments/<v13_run> experiments/<v14_run> \
-  experiments/<v15_run> experiments/<v16_run> experiments/<v17_run>
+  experiments/<v15_run> experiments/<v16_run> experiments/<v17_run> \
+  experiments/<v18_run>
 ```
+
+### Paper PNG8 LPIPS evaluation and U45 no-reference evaluation
+
+The final paper comparison for v4 and v13-v18 is deliberately separate from
+training/validation and from the native float-output test summary. LPIPS is not
+a loss, is not computed during validation, and cannot select a checkpoint.
+On a server where the project's compatible PyTorch/torchvision environment is
+already installed, add the pinned metric package without changing that stack:
+
+```bash
+python -m pip install --no-deps lpips==0.1.4
+```
+
+First run the ordinary version test so `result/test_all_enhanced/` contains the
+complete frozen test split, then evaluate its saved RGB PNG8 files:
+
+```bash
+# First use only: allow torchvision to cache the fixed official AlexNet weights.
+python tools/evaluate_paper_metrics.py \
+  --run-dir experiments/<selected_run> \
+  --device cuda:0 \
+  --batch-size 8 \
+  --allow-lpips-download
+
+# Later/offline repetitions use the already verified cache.
+python tools/evaluate_paper_metrics.py \
+  --run-dir experiments/<selected_run> \
+  --device cuda:0 \
+  --batch-size 8
+```
+
+This writes `result/paper_metrics_png8/per_image_metrics.csv` and
+`summary.json`, containing PNG8 PSNR/SSIM/DeltaE00/LPIPS. The fixed LPIPS
+definition is `lpips==0.1.4`, AlexNet, version 0.1, learned LPIPS, official
+`normalize=True`, eval mode, float32, AMP/TF32 disabled, and per-image equal
+weighting. Both official weight files are SHA256-checked. Lower LPIPS is better.
+The evaluator accepts only the canonical LSUI/UIEB test manifest hashes, exact
+256x256 opaque RGB PNG8 predictions, and the requested versions v4/v13-v18.
+
+U45 is a separate input-only test benchmark with no GT. Put the unchanged 45
+official files from `upload/U45/U45/` directly in one clean directory. The tool
+checks all filenames, byte counts, and official Git blob identities before
+loading a model. Run it separately for each already validation-selected LSUI or
+UIEB checkpoint:
+
+```bash
+python tools/test_u45.py \
+  --run-dir experiments/<selected_lsui_or_uieb_run> \
+  --checkpoint best_psnr \
+  --data-root /root/autodl-tmp/pro/publicdata/U45 \
+  --gpu 0
+```
+
+The config's source dataset determines `result/u45/from_lsui/` or
+`result/u45/from_uieb/`. Each result contains native-size RGB PNG8 predictions,
+an immutable U45 manifest snapshot, checkpoint provenance, per-image metrics,
+and a summary. The model input follows its resolved evaluation transform
+(normally 256x256 bilinear); the output is restored to each original U45 size
+before PNG encoding. Final metrics are `FX_UIQM_v2` and
+`FX_UCIQE_CIELAB_v1`, both higher-is-better and averaged over all 45 images.
+U45 never trains, validates, selects a checkpoint, or changes the model.
+
+Both tools use transactional output. A failed dependency, bad image, failed
+inference, non-finite value, metric exception, or interrupted normal exception
+leaves no formal result directory. A successful existing result is never
+silently mixed with a rerun: omit `--overwrite` to refuse it, or use
+`--overwrite` to build a complete replacement in staging and swap it only after
+success. Thus a failed first run can be repeated with the same command.
+
+```bash
+python tools/compare_runs.py \
+  experiments/<v4_run> experiments/<v13_run> experiments/<v14_run> \
+  experiments/<v15_run> experiments/<v16_run> experiments/<v17_run> \
+  experiments/<v18_run>
+```
+
+The comparison table reads native float test metrics, paper PNG8 metrics and
+U45 UIQM/UCIQE separately; missing legacy results remain `N/A`.
 
 ## Experiment artifacts
 
@@ -241,7 +322,7 @@ python tools/print_model_info.py --config configs/config_v16.yaml
 python tools/print_model_info.py --config configs/config_v17.yaml
 
 # Side-by-side completed or partial runs; includes test_e00, with missing values as N/A
-python tools/compare_runs.py experiments/<v1_run> experiments/<v2_run> experiments/<v3_run> experiments/<v4_run> experiments/<v5_run> experiments/<v6_run> experiments/<v7_run> experiments/<v8_run> experiments/<v9_run> experiments/<v10_run> experiments/<v11_run> experiments/<v12_run> experiments/<v13_run> experiments/<v14_run> experiments/<v15_run> experiments/<v16_run> experiments/<v17_run>
+python tools/compare_runs.py experiments/<v1_run> experiments/<v2_run> experiments/<v3_run> experiments/<v4_run> experiments/<v5_run> experiments/<v6_run> experiments/<v7_run> experiments/<v8_run> experiments/<v9_run> experiments/<v10_run> experiments/<v11_run> experiments/<v12_run> experiments/<v13_run> experiments/<v14_run> experiments/<v15_run> experiments/<v16_run> experiments/<v17_run> experiments/<v18_run>
 
 # Full model-free LSUI split/difficulty/duplicate diagnostic
 python tools/diagnose_lsui.py --config configs/config_v1.yaml
