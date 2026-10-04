@@ -9,7 +9,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSIONS = ("v4", "v13", "v14", "v15", "v16", "v17")
+VERSIONS = ("v4", "v13", "v14", "v15", "v16", "v17", "v19")
 SPLITS = ("train", "validation", "test")
 LSUI_COUNTS = {"train": 3466, "validation": 385, "test": 428}
 UIEB_COUNTS = {"train": 720, "validation": 80, "test": 90}
@@ -20,6 +20,7 @@ UIEB_NAMES = {
     "v15": "PlainUNet_ColorQuery_UIEB_T90",
     "v16": "PlainUNet_ColorQuery_UICF_PreBackbone_UIEB_T90",
     "v17": "PlainUNet_ColorQuery_UICF_ParallelBranch_UIEB_T90",
+    "v19": "PlainUNet_ColorQuery_UICF_PreBackbone_SDQR_UIEB_T90",
 }
 IDENTITY_FIELDS = ("sample_id", "input_relative", "gt_relative")
 
