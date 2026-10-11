@@ -1,0 +1,18 @@
+{
+  "protocol": "V16_19_physical_train_val_v1",
+  "dataset": "uieb19",
+  "label": "UIEB19",
+  "counts": {
+    "train": 801,
+    "validation": 89
+  },
+  "files_sha256": {
+    "train.tsv": "4b29222c915e64b037b1a0785a44bb8cc2a9b9aad7d517be9e6bef660ae9ce7a",
+    "validation.tsv": "40d07847e99c2ca61e6c44297026857026c8a7c99ebd08023ac129a955ffa4f4",
+    "file_index.json": "5d83a8c5018c4ffcdfdba62cb8bb3fdf48e0ea9a68797507666602dc089e289d",
+    "data_quality.json": "37dde212c86c6f577e621b63f8515cb866ea0bf95e2820a03f4ba2663ac1c18a"
+  },
+  "fingerprint": "4fd9c002ef5c5823644bba3b02ef177966762251e8b4f4e5657106b5134bb124",
+  "membership": "existing physical Train/Val folders",
+  "has_test_split": false
+}

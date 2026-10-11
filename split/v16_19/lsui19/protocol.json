@@ -1,0 +1,18 @@
+{
+  "protocol": "V16_19_physical_train_val_v1",
+  "dataset": "lsui19",
+  "label": "LSUI19",
+  "counts": {
+    "train": 3851,
+    "validation": 428
+  },
+  "files_sha256": {
+    "train.tsv": "cb70fc3ddc9491ba69cd35dd9b5c3ad1b402a449b573279352a4cb1ac9af3885",
+    "validation.tsv": "d533fe73f03e9973b6012894aaccc63fa1ea1a49f0d374a72a53185b8e998cb6",
+    "file_index.json": "f024276f0ca9c31dd8a35be696f261dea3bc16114327b4d91b7e210c511f6333",
+    "data_quality.json": "3ca88f313415136a5ed5741b26d86139949e5c4a4b812a67c63658cd1a049c3d"
+  },
+  "fingerprint": "d87af13185bbef9b22ea11c10fbb7530d6f862b27d6daacaddd4aa7780fb51f8",
+  "membership": "existing physical Train/Val folders",
+  "has_test_split": false
+}

@@ -1,0 +1,77 @@
+{
+  "base_version": "v16",
+  "display_name": "V16-19",
+  "files": [
+    {
+      "source": "src/v4/models/unet.py",
+      "destination": "models/unet.py",
+      "source_sha256": "76b2e4d0408e55d19c070bfef2fc0b81de0c3f84c38edfb011176fbe6d22c5b3",
+      "destination_sha256": "76b2e4d0408e55d19c070bfef2fc0b81de0c3f84c38edfb011176fbe6d22c5b3",
+      "note": "Snapshot; dataset/engine adapted to two splits, CQ import localized."
+    },
+    {
+      "source": "src/shared/color_query_unet.py",
+      "destination": "models/color_query_unet.py",
+      "source_sha256": "e6941b50ab95f9cead03ef854f109ce36349c838ea62d5330fcc618c604d4d43",
+      "destination_sha256": "d97026bf2f6b15e5ee0b4f3caef5d3a93b35fdea209f2c9ac058ceb35afdc54f",
+      "note": "Snapshot; dataset/engine adapted to two splits, CQ import localized."
+    },
+    {
+      "source": "src/shared/uicf_inr.py",
+      "destination": "models/uicf_inr.py",
+      "source_sha256": "f58983c929d548f07ec9976af650c6bf738f19a96179160eed97e21ff0bce596",
+      "destination_sha256": "f58983c929d548f07ec9976af650c6bf738f19a96179160eed97e21ff0bce596",
+      "note": "Snapshot; dataset/engine adapted to two splits, CQ import localized."
+    },
+    {
+      "source": "src/shared/e00.py",
+      "destination": "e00.py",
+      "source_sha256": "0c6e2bfb871d4f91922127eebbe710114cc48c55776841a8337f7fd4d8116517",
+      "destination_sha256": "0c6e2bfb871d4f91922127eebbe710114cc48c55776841a8337f7fd4d8116517",
+      "note": "Snapshot; dataset/engine adapted to two splits, CQ import localized."
+    },
+    {
+      "source": "src/v16/dataset.py",
+      "destination": "dataset.py",
+      "source_sha256": "54100081543482281185783c9ef689b4b08847e35f88e4548b673748b4efe7da",
+      "destination_sha256": "eb961c42b6037e3e377250daa02211016034129df565a15bb3da0e08f9cb2e4d",
+      "note": "Snapshot; dataset/engine adapted to two splits, CQ import localized."
+    },
+    {
+      "source": "src/v16/metrics.py",
+      "destination": "metrics.py",
+      "source_sha256": "f7e14beb9465b2634d3826db45f06378fc9786e3cff3f68aae726ae717477ea3",
+      "destination_sha256": "f7e14beb9465b2634d3826db45f06378fc9786e3cff3f68aae726ae717477ea3",
+      "note": "Snapshot; dataset/engine adapted to two splits, CQ import localized."
+    },
+    {
+      "source": "src/v16/losses.py",
+      "destination": "losses.py",
+      "source_sha256": "d557911209294884293f48e838798ea88f86ab21d9212c25f087ebf81dee9100",
+      "destination_sha256": "d557911209294884293f48e838798ea88f86ab21d9212c25f087ebf81dee9100",
+      "note": "Snapshot; dataset/engine adapted to two splits, CQ import localized."
+    },
+    {
+      "source": "src/v16/utils.py",
+      "destination": "utils.py",
+      "source_sha256": "ac38e25fe01e49b03066461b2aea4c1357ec44d76c1b1180f45c20e2cbd82f53",
+      "destination_sha256": "619ec77b18601516be25ce616205e89884706a4df05b7f081ff7928045fcc1c5",
+      "note": "Snapshot; dataset/engine adapted to two splits, CQ import localized."
+    },
+    {
+      "source": "src/v16/engine.py",
+      "destination": "engine.py",
+      "source_sha256": "4507bd135a079bf68e2cfeb15395658f5eea2ebbc8031e49cb1f4a3ad44b964f",
+      "destination_sha256": "3e52a42e9e4b94e59ae8f3ab937974ff6bd3515e5964c7c6fffb3aedef9dea50",
+      "note": "Snapshot; dataset/engine adapted to two splits, CQ import localized."
+    },
+    {
+      "source": "src/shared/uicf_models.py",
+      "source_sha256": "c129b1f297382e176753b4ad333cb439fa896f400a14ba90aeb07dcbc9b1f6f6",
+      "destination": "models/topology.py",
+      "note": "UICFPreBackbone class extracted unchanged.",
+      "destination_sha256": "bcdd44b59193bf7bbf80083ec93d017137b7d5c0c4a82ccaed5694f63db85c69"
+    }
+  ],
+  "isolation": "All model, metric, data, engine, and helper implementations are local; no legacy runtime imports."
+}

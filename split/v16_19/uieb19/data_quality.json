@@ -1,0 +1,125 @@
+{
+  "duplicate_definition": "identical RGB dimensions and every pixel",
+  "duplicate_input_groups": [
+    {
+      "samples": [
+        {
+          "sample_id": "180_img_",
+          "split": "train",
+          "path": "Train/input/180_img_.png"
+        },
+        {
+          "sample_id": "646_img_",
+          "split": "train",
+          "path": "Train/input/646_img_.png"
+        }
+      ],
+      "cross_split": false,
+      "identical_gt_pixels": true
+    },
+    {
+      "samples": [
+        {
+          "sample_id": "550_img_",
+          "split": "train",
+          "path": "Train/input/550_img_.png"
+        },
+        {
+          "sample_id": "558_img_",
+          "split": "train",
+          "path": "Train/input/558_img_.png"
+        }
+      ],
+      "cross_split": false,
+      "identical_gt_pixels": false
+    },
+    {
+      "samples": [
+        {
+          "sample_id": "582_img_",
+          "split": "train",
+          "path": "Train/input/582_img_.png"
+        },
+        {
+          "sample_id": "648_img_",
+          "split": "train",
+          "path": "Train/input/648_img_.png"
+        }
+      ],
+      "cross_split": false,
+      "identical_gt_pixels": false
+    },
+    {
+      "samples": [
+        {
+          "sample_id": "684_img_",
+          "split": "train",
+          "path": "Train/input/684_img_.png"
+        },
+        {
+          "sample_id": "815_img_",
+          "split": "train",
+          "path": "Train/input/815_img_.png"
+        }
+      ],
+      "cross_split": false,
+      "identical_gt_pixels": false
+    },
+    {
+      "samples": [
+        {
+          "sample_id": "701_img_",
+          "split": "train",
+          "path": "Train/input/701_img_.png"
+        },
+        {
+          "sample_id": "786_img_",
+          "split": "train",
+          "path": "Train/input/786_img_.png"
+        }
+      ],
+      "cross_split": false,
+      "identical_gt_pixels": true
+    },
+    {
+      "samples": [
+        {
+          "sample_id": "708_img_",
+          "split": "train",
+          "path": "Train/input/708_img_.png"
+        },
+        {
+          "sample_id": "829_img_",
+          "split": "train",
+          "path": "Train/input/829_img_.png"
+        }
+      ],
+      "cross_split": false,
+      "identical_gt_pixels": true
+    },
+    {
+      "samples": [
+        {
+          "sample_id": "720_img_",
+          "split": "train",
+          "path": "Train/input/720_img_.png"
+        },
+        {
+          "sample_id": "831_img_",
+          "split": "train",
+          "path": "Train/input/831_img_.png"
+        }
+      ],
+      "cross_split": false,
+      "identical_gt_pixels": false
+    }
+  ],
+  "cross_split_duplicate_groups": 0,
+  "format_extension_mismatches": [
+    {
+      "path": "Train/GT/7027.png",
+      "actual_format": "JPEG"
+    }
+  ],
+  "policy": "Preserve physical membership and originals; duplicates are reported, not removed."
+}
