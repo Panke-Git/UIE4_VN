@@ -6,7 +6,7 @@ experiment:
   output_root: experiments/v16_19/uieb19
 data:
   dataset: UIEB19
-  root: ../publicdata/UIEB19
+  root: /root/autodl-tmp/pro/publicdata/UIEB19
   expected_counts:
     train: 801
     validation: 89

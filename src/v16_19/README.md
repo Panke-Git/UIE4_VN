@@ -21,15 +21,15 @@ V16-19 保留 V16 的 `PlainUNetColorQuery(UICF(I))` 模型结构，直接使用
 
 以下命令从 `UIE4_VN` 项目根目录执行。复用现有 PyTorch 环境；必要依赖是 PyTorch、NumPy、Pillow、PyYAML、`scikit-image>=0.25,<0.26`。测试另需 pytest。图片导出及曲线绘制使用 Pillow，不额外依赖 matplotlib。
 
-两个配置默认的数据根目录分别为 `../publicdata/LSUI19` 和 `../publicdata/UIEB19`，相对路径始终按项目根目录解析。若服务器数据位于其他目录，使用 `--data-root /absolute/path`，不需要修改清单。
+两个配置默认的数据根目录分别为 `/root/autodl-tmp/pro/publicdata/LSUI19` 和 `/root/autodl-tmp/pro/publicdata/UIEB19`。在这台服务器上执行下方 preflight 和训练命令即可，无需额外传入 `--data-root`。若数据位于其他目录，使用 `--data-root /absolute/path` 覆盖配置，不需要修改清单；相对路径始终按项目根目录解析。
 
 ## 数据准备与冻结
 
 当前本地真实数据已生成两套完整的冻结清单。部署到服务器时，请上传 `split/v16_19/` 和对应的原始数据，再执行验证。
 
 ```bash
-python -m src.v16_19.prepare --dataset lsui19 --data-root ../publicdata/LSUI19 --verify-only
-python -m src.v16_19.prepare --dataset uieb19 --data-root ../publicdata/UIEB19 --verify-only
+python -m src.v16_19.prepare --dataset lsui19 --data-root /root/autodl-tmp/pro/publicdata/LSUI19 --verify-only
+python -m src.v16_19.prepare --dataset uieb19 --data-root /root/autodl-tmp/pro/publicdata/UIEB19 --verify-only
 ```
 
 如果用于首次准备相同协议的新 checkout，去掉 `--verify-only`。不存在输出目录时，工具根据实际物理 Train/Val 文件生成清单；已有输出目录时只检查，不重新划分或覆盖。CLI 输出目录受限于 `split/v16_19/`，因此不会覆盖旧清单。已有清单和数据不匹配时应核对数据，而不是删除清单来掩盖变化。
@@ -61,12 +61,12 @@ python -m src.v16_19.train --config configs/v16_19/lsui19.yaml --gpu 0
 python -m src.v16_19.train --config configs/v16_19/uieb19.yaml --gpu 0
 ```
 
-服务器路径覆盖示例：
+使用原本地数据路径时的覆盖示例：
 
 ```bash
 python -m src.v16_19.train \
   --config configs/v16_19/lsui19.yaml \
-  --data-root /root/autodl-tmp/pro/publicdata/LSUI19 \
+  --data-root ../publicdata/LSUI19 \
   --gpu 0
 ```
 

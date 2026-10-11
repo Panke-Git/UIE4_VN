@@ -6,7 +6,7 @@ experiment:
   output_root: experiments/v16_19/lsui19
 data:
   dataset: LSUI19
-  root: ../publicdata/LSUI19
+  root: /root/autodl-tmp/pro/publicdata/LSUI19
   expected_counts:
     train: 3851
     validation: 428
