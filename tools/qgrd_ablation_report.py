@@ -32,6 +32,31 @@ PROTOCOLS = {"lsui": {"dataset": "LSUI19", "counts": {"train": 3466, "validation
              "uieb": {"dataset": "UIEB", "counts": {"train": 720, "validation": 80, "test": 90}}}
 
 
+def audit_evaluation_precision(config, info, summary, role):
+    # Metadata audit only; never import a model/evaluation runner here.
+    explicit = config["evaluation"].get("precision")
+    precision = explicit if explicit is not None else (
+        "native_amp" if config["training"]["amp"] else "fp32"
+    )
+    if precision not in {"fp32", "native_amp"}:
+        raise ValueError(f"{role}: unknown evaluation_precision {precision!r}")
+    for label, record in (("run_info", info), ("test_summary", summary)):
+        declared = record.get("evaluation_precision")
+        if explicit is not None and declared != precision:
+            raise ValueError(f"{role}: {label} evaluation_precision missing or inconsistent")
+        if declared is not None and declared != precision:
+            raise ValueError(f"{role}: {label} evaluation_precision differs from checkpoint-selection config")
+        if precision == "fp32" and explicit is not None:
+            expected = {
+                "precision": "fp32", "autocast_enabled": False,
+                "input_dtype": "torch.float32", "prediction_dtype": "torch.float32",
+                "loss_dtype": "torch.float32", "model_weights_changed_for_evaluation": False,
+            }
+            if record.get("evaluation_forward_protocol") != expected:
+                raise ValueError(f"{role}: {label} FP32 evaluation forward protocol inconsistent")
+    return precision
+
+
 def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -119,6 +144,7 @@ def audit_run(path: Path, role: str, dataset: str):
         raise ValueError(f"{role}: summary metric protocol mismatch")
     if summary.get("evaluation", config["evaluation"]) != config["evaluation"]:
         raise ValueError(f"{role}: summary evaluation resize/size mismatch")
+    precision = audit_evaluation_precision(config, info, summary, role)
     with (path / "result/test_metrics.csv").open(encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         required = {"filename", "sample_id", "psnr", "ssim", "e00"}
@@ -149,6 +175,7 @@ def audit_run(path: Path, role: str, dataset: str):
         "dataset": protocol["dataset"], "split_sha256": hashes, "counts": counts,
         "test_sample_ids": sorted(by_id), "metrics": config["metrics"],
         "evaluation": config["evaluation"], "e00_protocol": e00,
+        "evaluation_precision": precision,
         "checkpoint_selector": selector, "metric_input": "float_rgb_before_png_save",
         "seed": config["experiment"]["seed"],
         "training_protocol": {k: config[k] for k in ("loss", "optimizer", "scheduler", "training", "checkpoint")},

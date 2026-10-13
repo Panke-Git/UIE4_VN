@@ -31,9 +31,18 @@ def report_runs(tmp_path, monkeypatch):
         for child in ("result", "split_snapshot"):
             (run / child).mkdir(parents=True)
         cfg = config(role) if role != "v16" else yaml.safe_load((ROOT / "configs/config_v16.yaml").read_text())
+        # Synthetic successful comparison uses one declared precision for all
+        # roles. This changes no real baseline/A1/A3/A4 files or their runners.
+        cfg["evaluation"]["precision"] = "fp32"
         cfg["data"]["expected_counts"] = report.PROTOCOLS["lsui"]["counts"]
         (run / "config_resolved.yaml").write_text(yaml.safe_dump(cfg))
         info = {"version": cfg["experiment"]["version"], "resolved_config": cfg}
+        protocol = {
+            "precision": "fp32", "autocast_enabled": False,
+            "input_dtype": "torch.float32", "prediction_dtype": "torch.float32",
+            "loss_dtype": "torch.float32", "model_weights_changed_for_evaluation": False,
+        }
+        info.update(evaluation_precision="fp32", evaluation_forward_protocol=protocol)
         for split, count in cfg["data"]["expected_counts"].items():
             manifest = run / f"split_snapshot/{split}.tsv"
             manifest.write_text("".join(f"{split}_{i}\t{split}/input/{split}_{i}.png\t{split}/GT/{split}_{i}.png\n"
@@ -51,6 +60,7 @@ def report_runs(tmp_path, monkeypatch):
         summary = {"checkpoint": str(run / "best/best_psnr.pt"), "checkpoint_epoch": 1, "sample_count": 2,
                    "mean_psnr": 25.5 + offset, "mean_ssim": 0.9, "mean_e00": 5.5,
                    "e00_protocol": e00_protocol(cfg["metrics"])}
+        summary.update(evaluation_precision="fp32", evaluation_forward_protocol=protocol)
         (run / "result/test_summary.json").write_text(json.dumps(summary))
         runs[role] = run
     return report, runs
@@ -124,6 +134,33 @@ def test_report_does_not_import_models():
             assert all(not a.name.startswith("src.") for a in node.names)
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith("src.")
+
+
+def test_report_refuses_mixed_legacy_amp_and_new_fp32(report_runs):
+    report, runs = report_runs
+    path = runs["v16"]
+    cfg = yaml.safe_load((path / "config_resolved.yaml").read_text())
+    cfg["evaluation"].pop("precision")
+    (path / "config_resolved.yaml").write_text(yaml.safe_dump(cfg))
+    def legacy_info(record):
+        record["resolved_config"] = cfg
+        record.pop("evaluation_precision")
+        record.pop("evaluation_forward_protocol")
+    rewrite_json(path / "run_info.json", legacy_info)
+    def legacy_summary(record):
+        record.pop("evaluation_precision")
+        record.pop("evaluation_forward_protocol")
+    rewrite_json(path / "result/test_summary.json", legacy_summary)
+    with pytest.raises(ValueError, match="evaluation_precision"):
+        report.compare(runs, "lsui")
+
+
+def test_report_refuses_precision_metadata_relabeling(report_runs):
+    report, runs = report_runs
+    rewrite_json(runs["shared_query"] / "result/test_summary.json",
+                 lambda record: record.update(evaluation_precision="native_amp"))
+    with pytest.raises(ValueError, match="evaluation_precision"):
+        report.compare(runs, "lsui")
 
 
 @pytest.mark.parametrize("dataset", ("lsui", "uieb"))

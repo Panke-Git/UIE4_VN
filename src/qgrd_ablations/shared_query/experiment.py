@@ -15,6 +15,7 @@ from typing import Any
 import torch
 
 from .provenance import verify_source_hashes, protocol_identity, VARIANT
+from .evaluation import evaluation_precision, evaluation_protocol
 from .utils import PROJECT_ROOT, atomic_json, parameter_counts, project_path, save_yaml, sha256_file
 
 
@@ -90,6 +91,8 @@ def initialize_run(
         "variant": VARIANT,
         "source_sha256": verify_source_hashes(),
         "protocol_identity": protocol_identity(config),
+        "evaluation_precision": evaluation_precision(config),
+        "evaluation_forward_protocol": evaluation_protocol(config),
         "experiment_name": name,
         "version": version,
         "timestamp": timestamp.strftime("%Y%m%d_%H%M%S"),

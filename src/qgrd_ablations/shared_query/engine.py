@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader
 
 from src.shared.e00 import batch_delta_e00
 
+from .evaluation import evaluation_precision, evaluation_protocol, fp32_context, require_fp32
 from .provenance import verify_source_hashes, protocol_identity, VARIANT
 from .experiment import update_status
 from .metrics import batch_metrics
@@ -56,6 +57,8 @@ def _checkpoint_payload(
         "model_type": config["model"]["type"],
         "source_sha256": verify_source_hashes(),
         "protocol_identity": protocol_identity(config),
+        "evaluation_precision": evaluation_precision(config),
+        "evaluation_forward_protocol": evaluation_protocol(config),
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
@@ -92,6 +95,8 @@ def _save_best(
             "learning_rate": learning_rate,
             "checkpoint": filename,
             "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "evaluation_precision": payload["evaluation_precision"],
+            "evaluation_forward_protocol": payload["evaluation_forward_protocol"],
         },
     )
 
@@ -113,18 +118,20 @@ def validate(
     ssim_values: list[float] = []
     e00_values: list[float] = []
     rows: list[dict[str, Any]] = []
-    amp_enabled = bool(config["training"]["amp"]) and device.type == "cuda"
+    evaluation_precision(config)
     for batch in loader:
-        inputs = batch["input"].to(device, non_blocking=True)
-        targets = batch["target"].to(device, non_blocking=True)
-        with torch.autocast(device_type=device.type, enabled=amp_enabled):
+        inputs = batch["input"].to(device, dtype=torch.float32, non_blocking=True)
+        targets = batch["target"].to(device, dtype=torch.float32, non_blocking=True)
+        with fp32_context(config, device):
             prediction = model(inputs)
             loss = criterion(prediction, targets)
-        if not torch.isfinite(prediction).all() or not torch.isfinite(loss):
-            raise FloatingPointError(f"Non-finite validation output/loss at epoch={epoch} ids={batch['id']}")
-        clipped = prediction.float().clamp(0.0, 1.0)
-        psnr, ssim = batch_metrics(clipped, targets.float(), config["metrics"])
-        e00 = batch_delta_e00(clipped, targets.float(), config["metrics"])
+            require_fp32(prediction, "prediction")
+            require_fp32(loss, "loss")
+            if not torch.isfinite(prediction).all() or not torch.isfinite(loss):
+                raise FloatingPointError(f"Non-finite validation output/loss at epoch={epoch} ids={batch['id']}")
+            clipped = prediction.float().clamp(0.0, 1.0)
+            psnr, ssim = batch_metrics(clipped, targets.float(), config["metrics"])
+            e00 = batch_delta_e00(clipped, targets.float(), config["metrics"])
         batch_size = inputs.shape[0]
         loss_total += float(loss) * batch_size
         sample_count += batch_size
@@ -167,6 +174,8 @@ def validate(
             "mean_psnr": metrics["psnr"],
             "mean_ssim": metrics["ssim"],
             "mean_e00": metrics["e00"],
+            "evaluation_precision": evaluation_precision(config),
+            "evaluation_forward_protocol": evaluation_protocol(config),
         },
     )
     return metrics

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .utils import PROJECT_ROOT, sha256_file
 from .models import EXPECTED_TYPE
+from .evaluation import evaluation_precision, evaluation_protocol
 
 EXPECTED_VERSION = "qgrd_shared_query"
 VARIANT = "shared_query"
@@ -68,6 +69,7 @@ def validate_config(config: dict) -> None:
         raise ValueError(f"{EXPECTED_VERSION} refuses experiment variant/version {config['experiment']['version']!r}")
     if config["model"].get("type") != EXPECTED_TYPE:
         raise ValueError(f"{VARIANT} refuses model.type {config['model'].get('type')!r}")
+    evaluation_precision(config)
     dataset = config["data"].get("dataset")
     if dataset not in PROTOCOLS:
         raise ValueError(f"Unsupported dataset protocol: {dataset!r}")
@@ -121,6 +123,9 @@ def verify_run_metadata(run_dir: Path, config: dict, sources: dict, manifests: d
         raise ValueError("Frozen split_snapshot differs from run_info hashes")
     if info.get("protocol_identity") != protocol_identity(config):
         raise ValueError("Run dataset protocol identity mismatch")
+    if (info.get("evaluation_precision") != evaluation_precision(config)
+            or info.get("evaluation_forward_protocol") != evaluation_protocol(config)):
+        raise ValueError("Run evaluation precision protocol mismatch")
     return info
 
 
@@ -135,3 +140,6 @@ def verify_checkpoint(checkpoint: dict, config: dict, sources: dict) -> None:
         raise ValueError("Checkpoint source SHA256 differs from current sources")
     if checkpoint.get("protocol_identity") != protocol_identity(config):
         raise ValueError("Checkpoint dataset protocol mismatch")
+    if (checkpoint.get("evaluation_precision") != evaluation_precision(config)
+            or checkpoint.get("evaluation_forward_protocol") != evaluation_protocol(config)):
+        raise ValueError("Checkpoint evaluation precision protocol mismatch")

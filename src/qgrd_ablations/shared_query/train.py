@@ -172,6 +172,7 @@ def main(argv: list[str] | None = None) -> None:
             console=False,
         )
         logger.info("device=%s amp_requested=%s amp_enabled=%s", device, config["training"]["amp"], device.type == "cuda" and config["training"]["amp"])
+        logger.info("validation_precision=fp32 validation_autocast=False; training AMP configuration unchanged")
         if bool(config["training"]["deterministic"]):
             logger.warning("Deterministic algorithms requested; unsupported operations will emit PyTorch warnings")
 

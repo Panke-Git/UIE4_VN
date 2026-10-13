@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 
 from src.shared.e00 import batch_delta_e00, e00_protocol
 
+from .evaluation import evaluation_precision, evaluation_protocol, fp32_context, require_fp32
 from .dataset import LSUIDataset, validate_split_protocol
 from .metrics import batch_metrics
 from .models import build_model
@@ -149,6 +150,7 @@ def main(argv: list[str] | None = None) -> None:
         f"{EXPECTED_VERSION}.test.{run_dir.name}", result_dir.parent / "log" / "test.log",
         append=True, console=bool(config["logging"]["console"]),
     )
+    logger.info("evaluation_precision=fp32 model_forward_autocast=False training_amp_config=%s", config["training"]["amp"])
     visualization = config["test"]["visualization"]
     sample_count = min(int(visualization["num_samples"]), len(entries["test"]))
     selected_indices = random.Random(int(visualization["random_seed"])).sample(
@@ -161,25 +163,26 @@ def main(argv: list[str] | None = None) -> None:
     e00_seconds = 0.0
     total_start = time.perf_counter()
     used_names: set[str] = set()
-    amp_enabled = bool(config["training"]["amp"]) and device.type == "cuda"
     for index, batch in enumerate(test_loader):
-        inputs = batch["input"].to(device, non_blocking=True)
-        targets = batch["target"].to(device, non_blocking=True)
+        inputs = batch["input"].to(device, dtype=torch.float32, non_blocking=True)
+        targets = batch["target"].to(device, dtype=torch.float32, non_blocking=True)
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         start = time.perf_counter()
-        with torch.autocast(device_type=device.type, enabled=amp_enabled):
+        with fp32_context(config, device):
             prediction = model(inputs)
+            require_fp32(prediction, "prediction")
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         inference_seconds += time.perf_counter() - start
         if not torch.isfinite(prediction).all():
             raise FloatingPointError(f"Non-finite test output sample_id={batch['id'][0]}")
-        prediction = prediction.float().clamp(0.0, 1.0)
-        psnr, ssim = batch_metrics(prediction, targets.float(), config["metrics"])
-        e00_start = time.perf_counter()
-        e00 = batch_delta_e00(prediction, targets.float(), config["metrics"])
-        e00_seconds += time.perf_counter() - e00_start
+        with fp32_context(config, device):
+            prediction = prediction.float().clamp(0.0, 1.0)
+            psnr, ssim = batch_metrics(prediction, targets.float(), config["metrics"])
+            e00_start = time.perf_counter()
+            e00 = batch_delta_e00(prediction, targets.float(), config["metrics"])
+            e00_seconds += time.perf_counter() - e00_start
         filename = batch["filename"][0]
         stem = Path(filename).stem
         output_name = f"{stem}_enhanced.png"
@@ -229,6 +232,8 @@ def main(argv: list[str] | None = None) -> None:
             "metric_input": "float_rgb_before_png_save",
             "metric_config": config["metrics"],
             "evaluation": config["evaluation"],
+            "evaluation_precision": evaluation_precision(config),
+            "evaluation_forward_protocol": evaluation_protocol(config),
             "source_sha256": sources,
             "split_sha256": {s: info[f"{s}_tsv_sha256"] for s in ("train", "validation", "test")},
             "checkpoint": str(checkpoint_path),

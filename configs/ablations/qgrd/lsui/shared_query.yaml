@@ -1,6 +1,6 @@
 experiment:
   version: qgrd_shared_query
-  name: UICF_ColorQuery_SharedQuery
+  name: UICF_ColorQuery_SharedQuery_FP32Eval
   seed: 3520
   output_root: experiments/qgrd_ablations/shared_query/lsui
 
@@ -79,6 +79,7 @@ checkpoint:
 evaluation:
   resize: true
   size: 256
+  precision: fp32
 
 metrics:
   data_range: 1.0

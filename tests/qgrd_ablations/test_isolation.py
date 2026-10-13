@@ -55,6 +55,9 @@ def test_versions_output_roots_and_all_checkpoint_guards():
         payload = {"version": cfg["experiment"]["version"], "variant": variant,
                    "model_type": cfg["model"]["type"], "resolved_config": cfg,
                    "source_sha256": sources, "protocol_identity": guard.protocol_identity(cfg)}
+        if variant == "shared_query":
+            payload["evaluation_precision"] = "fp32"
+            payload["evaluation_forward_protocol"] = module(variant, "evaluation").evaluation_protocol(cfg)
         guard.verify_checkpoint(payload, cfg, sources)
         for other in VARIANTS:
             if other == variant:

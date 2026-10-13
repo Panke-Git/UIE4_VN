@@ -14,6 +14,11 @@ def test_eight_configs_only_have_permitted_changes(dataset, baseline):
         for key in ("version", "name", "output_root"):
             normalized["experiment"][key] = reference["experiment"][key]
         normalized["model"]["type"] = reference["model"]["type"]
+        if variant == "shared_query":
+            # The accepted A2-only numerical fix changes evaluation precision,
+            # not training, architecture, resize, loss, optimizer or metrics.
+            assert normalized["evaluation"].pop("precision") == "fp32"
+            assert "FP32Eval" in cfg["experiment"]["name"]
         assert normalized == reference
         guard = module(variant, "provenance")
         guard.validate_config(cfg)

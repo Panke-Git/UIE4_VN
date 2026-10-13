@@ -2,6 +2,51 @@
 
 这四套实验以原 V16 的三集合协议为基础，不使用 V19-SDQR、V18-NLQC 或 V16-19 的两集合协议。所有实验从头训练，不加载已有 V13/V16/V19 checkpoint 作为初始化。
 
+## A2 新实验：FP32 评价修复
+
+在旧 A2 的 Epoch 124 验证中，已定位到 decoder3 第一层 Conv2d 的 FP16 输出溢出：
+输入和权重有限，输出出现 +Inf；同一权重和 batch 的 FP32 forward 有限。
+本次按用户选择，仅修复 A2（LSUI 与 UIEB）：训练仍为原 AMP，
+验证和测试的模型 forward/loss 固定 float32 并关闭 autocast。
+不改模型、UICF、Query assignment、loss、optimizer、学习率、batch、增强或清单。
+FP32 评价不额外改变 PyTorch 的 TF32 backend 设置。
+
+两份 shared_query.yaml 新增 evaluation.precision: fp32，实验名带 FP32Eval。
+启动方式不变，自动创建新的 run 目录，不覆盖旧 run：
+
+```bash
+python -m src.qgrd_ablations.shared_query.train --config configs/ablations/qgrd/lsui/shared_query.yaml --seed 3520 --gpu 0
+python -m src.qgrd_ablations.shared_query.train --config configs/ablations/qgrd/uieb/shared_query.yaml --seed 3520 --gpu 0
+```
+
+此次从 Epoch 1 开始，**不要添加 --resume 指向旧 Epoch 123 run**。
+新 run 的中断恢复仍使用原 --resume <NEW_RUN>/checkpoint/last.pt。
+旧 run 的配置/checkpoint/history 不修改；新代码明确拒绝缺少 FP32 声明的旧 A2 配置，
+且保留源码 SHA256/精度协议检查，不迁移或重新标记旧 checkpoint。
+如需将来运行旧实验，应保留并使用它记录的旧源码 checkout。
+
+部署到服务器至少同步整个 src/qgrd_ablations/shared_query/（不要上传 __pycache__），
+以及 configs/ablations/qgrd/lsui/shared_query.yaml 和
+configs/ablations/qgrd/uieb/shared_query.yaml；汇总时也同步 tools/qgrd_ablation_report.py。
+只上传之前的诊断脚本不会修复正式训练入口。
+
+run_info、checkpoint、best JSON、validation_summary 和 test_summary
+均记录 evaluation_precision / evaluation_forward_protocol。
+evaluation.py 仅供 A2 自己调用，其他变体没有 import 它。
+PSNR/SSIM/DeltaE00 算法、float-before-PNG、尺寸、crop 和 checkpoint selector 均不变。
+
+**本轮未改变 V16、A1、A3、A4 的评价执行精度。**
+qgrd_ablation_report.py 会拒绝把新 A2 FP32 结果和旧 native AMP 评价协议直接混比；
+不能仅改其他旧 run 的 YAML/summary 标签来绕过审计。后续统一论文精度属于另一项显式修改。
+本轮不自动重训其他组或对真实实验进行测试。
+
+本次数值修复验证：专项 9 passed；QGRD 73 passed；全仓库 414 passed，
+0 failed/skipped（全仓库旧可视化依赖仍使用项目外临时目录）。
+覆盖 FP16 Conv 溢出回归、嵌套 autocast 关闭、FP32 指标与参考实现一致、
+新 run train/test/resume 和精度 metadata、旧 run 拒绝与不覆盖、混合精度汇总拒绝。
+训练循环 AST 与原 V16 完全一致，模型/shared/其他消融源码不变。
+本地无 CUDA，未自动启动云端真实 200 epoch 训练。
+
 ## 数学定义与解释边界
 
 完整 V16：
@@ -70,7 +115,8 @@ train / test / provenance，以及 models/network.py 和 models/backbone.py。
 | configs/ablations/qgrd/uieb/ | UIEB | 720 / 80 / 90 | /root/autodl-tmp/pro/publicdata/UIEB19 |
 
 LSUI 从 configs/config_v16.yaml 复制；UIEB 从 configs/uieb/config_v16_uieb.yaml 复制。
-仅改变 experiment.version/name/output_root/model.type，其余配置逐项一致。
+初始版本仅改变 experiment.version/name/output_root/model.type。
+当前 A2 按上方数值修复额外声明 evaluation.precision=fp32；训练及其余协议仍逐项一致。
 原始 split/lsui19/*.tsv 与 split/uieb/*.tsv 的 SHA256 固定；
 不重划分，不使用 split/v16_19，不自动寻找替代数据。
 
@@ -179,7 +225,7 @@ bash scripts/qgrd_ablations/test_uieb_all.sh "<A1_UIEB_RUN>" "<A2_UIEB_RUN>" "<A
 支持 --dry-run 和 --data-root。脚本核对数据集，各独立 test 入口核对自己的版本/模型/checkpoint。
 测试只读该 run 的冻结 split_snapshot，不读取当前项目清单作为替代。
 
-指标完全沿用 V16 native float protocol：
+指标算法完全沿用 V16 native float protocol（A2 模型 forward 精度见上方修复说明）：
 
 - PSNR ↑ / SSIM ↑ / ΔE00 ↓，预测转 float32 并 clamp 到 [0,1]，在 PNG 保存前计算。
 - evaluation resize=true / size=256；crop_border=0；SSIM window=11 / sigma=1.5。
@@ -231,7 +277,7 @@ UIEB 用 --dataset uieb，并全部指定对应 UIEB 三集合实验目录。
 不加载/修改 checkpoint，不评价图像，不修改实验目录。
 
 必须一致：dataset、Train/Validation/Test hash、样本数量/IDs/filename、
-metric protocol、evaluation resize/size、best_psnr selector、seed、训练配方和公共模型配置。
+metric protocol、evaluation resize/size/precision、best_psnr selector、seed、训练配方和公共模型配置。
 同时检查 summary 与 CSV 的算术平均一致、结果完整且无重复 ID。
 旧 V16 缺少 dataset 字段时只从 data.root/manifests 唯一推断，不默认猜 LSUI。
 任何不匹配拒绝汇总并列出原因。
@@ -260,7 +306,7 @@ reports/qgrd_ablations/<lsui|uieb>/
 - 测试缺少依赖：在测试环境安装所缺依赖后重试，不通过 skip/xfail 规避。
 - 显存不足：第一轮受控实验不要只为某组调整 batch/patch；统一规划全部对照的新协议后再运行。
 
-## 本次本地验证的界限
+## 初始实现的本地验证记录
 
 实际环境：Python 3.12.11、PyTorch 2.8.0、NumPy 2.2.6、
 scikit-image 0.25.2、pytest 9.1.1；CUDA 不可用。

@@ -1,5 +1,11 @@
 # A2 / Shared Query 数值异常诊断
 
+注意：正式 A2 runner 已新增固定 FP32 评价协议。下面的旧 Epoch 123 诊断记录
+对应修复前的源码。更新 A2 包后，旧 run 会因缺少 FP32 声明或源码 hash 不同而被拒绝；
+不要为重复诊断修改旧 config/checkpoint 或删除校验。旧诊断应使用原源码 checkout。
+对新 FP32 run，工具中的 configured_amp 是独立的 AMP 对照探针，不是正式评价协议；
+正式验证/测试请使用新 A2 train/test 入口。
+
 本工具定位已有 A2 训练在 validation 中出现 NaN/Inf 的问题。
 它不是新的正式训练入口，不是自动稳定化修复，也不生成论文指标。
 
