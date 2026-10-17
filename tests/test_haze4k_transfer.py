@@ -17,7 +17,7 @@ from src.haze4k_transfer.compare import align, bootstrap, main as compare, load_
 from src.haze4k_transfer.dataset import HazeDataset, tensor
 from src.haze4k_transfer.eval import main as evaluate
 from src.haze4k_transfer.models import assert_initial_backbone_equivalence, build_model, canonical_model_config
-from src.haze4k_transfer.train import main as train
+from src.haze4k_transfer.train import accumulation_sample_count, normalized_backward_loss, main as train, validate_config
 from src.haze4k_transfer.utils import METRICS, ROOT, load_yaml, protocol, save_yaml, torch_load
 from src.v16.losses import CharbonnierLoss
 from src.v16.metrics import batch_metrics, per_image_psnr, per_image_ssim
@@ -181,6 +181,78 @@ def test_metric_mean_and_cluster_bootstrap():
     with pytest.raises(ValueError):
         bootstrap([1], ['a'], iterations=100)
     assert bootstrap([3,3], ['a','b'], iterations=2000)['ci95'] == [3,3]
+
+
+def test_backward_normalization_and_fp16_overflow():
+    # A fixed FP16 intermediate reproduces the extra batch-factor overflow without CUDA.
+    old = torch.tensor(0.25, dtype=torch.float16, requires_grad=True)
+    (old.float() * 0.125 * 16 * 65536).backward()
+    assert not torch.isfinite(old.grad)
+    corrected = torch.tensor(0.25, dtype=torch.float16, requires_grad=True)
+    (normalized_backward_loss(corrected.float() * 0.125, 16, 16) * 65536).backward()
+    assert corrected.grad.item() == 8192 and torch.isfinite(corrected.grad)
+    # Variable tail batches and truncated smoke groups equal each full group's mean gradient.
+    x = torch.arange(1, 12, dtype=torch.float64)
+    for acc, limit in ((1, 3), (2, 3), (3, 3), (4, 3), (3, 2)):
+        accumulated = torch.tensor(0.2, dtype=torch.float64, requires_grad=True)
+        reference = accumulated.detach().clone().requires_grad_()
+        for step in range(1, limit + 1):
+            batch = x[(step-1)*4:step*4]
+            count = accumulation_sample_count(len(x), 4, acc, step, limit)
+            loss = (accumulated * batch).square().mean()
+            normalized_backward_loss(loss, len(batch), count).backward()
+            if step % acc == 0 or step == limit:
+                first = ((step-1)//acc)*acc*4
+                (reference * x[first:step*4]).square().mean().backward()
+                assert torch.allclose(accumulated.grad, reference.grad, atol=1e-12, rtol=1e-12)
+                accumulated.grad = reference.grad = None
+
+
+def test_amp_configuration_is_explicit():
+    c = load_yaml(ROOT / 'configs/haze4k/full_v16.yaml')
+    for value in (0, -1, float('inf'), float('nan')):
+        c['training']['amp_init_scale'] = value
+        with pytest.raises(ValueError, match='finite and positive'):
+            validate_config(c)
+    with pytest.raises(SystemExit):
+        train(['--config', str(ROOT / 'configs/haze4k/full_v16.yaml'), '--fp32-smoke'])
+
+
+def test_nonfinite_gradients_still_fail_without_update(tmp_path, monkeypatch):
+    import importlib
+    module = importlib.import_module('src.haze4k_transfer.train')
+    factory = module.build_model
+    root = make_data(tmp_path / 'data', n=3, nt=2)
+    split = tmp_path / 'split'
+    prep.prepare(root, split, synthetic=True)
+    captured = {}
+    def build_with_fault(*args):
+        model = factory(*args)
+        weight = model.backbone.output_conv.weight
+        captured.update(weight=weight, initial=weight.detach().clone())
+        weight.register_hook(lambda gradient: torch.full_like(gradient, float('inf')))
+        return model
+    monkeypatch.setattr(module, 'build_model', build_with_fault)
+    base = ROOT / 'experiments/haze4k_transfer'
+    before = set(base.iterdir()) if base.exists() else set()
+    try:
+        with pytest.raises(FloatingPointError, match='no optimizer update applied'):
+            train(['--config', str(ROOT / 'configs/haze4k/full_v16.yaml'), '--data-root', str(root),
+                   '--split-dir', str(split), '--gpu', 'cpu', '--synthetic-smoke', '--smoke-epochs', '1',
+                   '--amp-init-scale', '1024'])
+        created = set(base.iterdir()) - before
+        assert len(created) == 1
+        run = created.pop()
+        diagnostic = json.loads((run / 'nonfinite_diagnostic.json').read_text())
+        assert diagnostic['step'] == 1 and diagnostic['inf_count'] > 0
+        assert diagnostic['parameter'] == 'backbone.output_conv.weight'
+        assert json.loads((run / 'status.json').read_text())['status'] == 'failed'
+        assert not list((run / 'checkpoint').iterdir())
+        assert torch.equal(captured['initial'], captured['weight'])
+        assert load_yaml(run / 'config_resolved.yaml')['training']['amp_init_scale'] == 1024
+    finally:
+        for run in set(base.iterdir()) - before:
+            shutil.rmtree(run)
 
 
 def test_synthetic_train_resume_eval_compare(tmp_path):

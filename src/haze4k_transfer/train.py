@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import shutil
 import time
@@ -21,6 +22,23 @@ from .utils import (ROOT, METRICS, audit_environment, device_for, fairness, fini
                     plot_history, project_path, restore_rng_state, rng_state, run_path_guard,
                     save_checkpoint, save_yaml, seed_everything, seed_worker, source_hashes,
                     torch_load, write_csv)
+
+
+def accumulation_sample_count(dataset_size, batch_size, accumulation_steps, step, step_limit):
+    """Actual images in this optimizer update, including a partial final batch/group."""
+    first = ((step - 1) // accumulation_steps) * accumulation_steps
+    end = min(first + accumulation_steps, step_limit)
+    count = min(end * batch_size, dataset_size) - first * batch_size
+    if count < 1 or not (1 <= step <= step_limit):
+        raise ValueError("Invalid accumulation group")
+    return count
+
+
+def normalized_backward_loss(loss, batch_samples, group_samples):
+    """Normalize BEFORE scaling/backward to avoid amplified FP16 intermediates."""
+    if not 0 < batch_samples <= group_samples:
+        raise ValueError("Invalid batch/group sample count")
+    return loss * (batch_samples / group_samples)
 
 
 def validate_config(c):
@@ -41,6 +59,9 @@ def validate_config(c):
             raise ValueError(f"Invalid {key}")
     if c["training"]["accumulation_steps"] < 1 or c["training"]["epochs"] < 1 or c["data"]["num_workers"] < 0:
         raise ValueError("Invalid training dimensions")
+    scale = float(c["training"].get("amp_init_scale", 65536.0))
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("amp_init_scale must be finite and positive")
 
 
 def main(argv=None):
@@ -53,14 +74,16 @@ def main(argv=None):
     p.add_argument("--batch-size", type=int)
     p.add_argument("--accumulation-steps", type=int)
     p.add_argument("--num-workers", type=int)
+    p.add_argument("--amp-init-scale", type=float, help="Explicit initial CUDA GradScaler scale; apply identically to both variants")
+    p.add_argument("--fp32-smoke", action="store_true", help="Disable AMP only for diagnostic --smoke-epochs runs")
     p.add_argument("--smoke-epochs", type=int, choices=(1, 2))
     p.add_argument("--smoke-steps", type=int, help="Train batches per epoch; requires --smoke-epochs; non-paper")
     p.add_argument("--synthetic-smoke", action="store_true", help="Patch 32, batch 2, workers 0; requires synthetic prepare")
     p.add_argument("--stop-after-epoch", type=int, help="Controlled epoch-boundary interruption, retaining target epochs")
     a = p.parse_args(argv)
-    if a.resume and any(v is not None for v in (a.config, a.batch_size, a.accumulation_steps, a.num_workers, a.smoke_epochs, a.smoke_steps)):
+    if a.resume and any(v is not None for v in (a.config, a.batch_size, a.accumulation_steps, a.num_workers, a.amp_init_scale, a.smoke_epochs, a.smoke_steps)):
         p.error("Resume uses saved config; only --gpu/--data-root/--stop-after-epoch may change")
-    if a.resume and (a.synthetic_smoke or a.split_dir):
+    if a.resume and (a.synthetic_smoke or a.split_dir or a.fp32_smoke):
         p.error("Resume uses saved synthetic marker and split snapshot")
     if not a.resume and not a.config:
         p.error("--config is required for a new run")
@@ -87,6 +110,13 @@ def main(argv=None):
             c["training"]["accumulation_steps"] = a.accumulation_steps
         if a.num_workers is not None:
             c["data"]["num_workers"] = a.num_workers
+        c["training"].setdefault("amp_init_scale", 65536.0)
+        if a.amp_init_scale is not None:
+            c["training"]["amp_init_scale"] = a.amp_init_scale
+        if a.fp32_smoke:
+            if not a.smoke_epochs:
+                p.error("--fp32-smoke requires --smoke-epochs; main experiment remains AMP-enabled")
+            c["training"]["amp"] = False
         if a.smoke_epochs:
             c["training"]["epochs"] = a.smoke_epochs
         if a.smoke_steps and (not a.smoke_epochs or a.smoke_steps < 1):
@@ -118,7 +148,7 @@ def main(argv=None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=c["optimizer"]["lr"],
                                  betas=tuple(c["optimizer"]["betas"]), weight_decay=c["optimizer"]["weight_decay"])
     amp = bool(c["training"]["amp"]) and device.type == "cuda"
-    scaler = torch.amp.GradScaler("cuda", enabled=amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp, init_scale=float(c["training"].get("amp_init_scale", 65536.0)))
     generator = torch.Generator().manual_seed(int(c["seed"]))
     train_loader = DataLoader(HazeDataset(data_root, rows["train"], "train", c["data"]["patch_size"]),
                               batch_size=c["data"]["batch_size"], shuffle=True, drop_last=False,
@@ -160,7 +190,11 @@ def main(argv=None):
     print(f"device={device}; AMP requested={c['training']['amp']} enabled={amp}; batch={c['data']['batch_size']}; "
           f"accumulation={c['training']['accumulation_steps']}; effective batch={c['data']['batch_size'] * c['training']['accumulation_steps']}; "
           f"synthetic={c['synthetic']}; smoke={c['smoke']}", flush=True)
+    print(f"AMP initial scale={c['training'].get('amp_init_scale', 65536.0)}; current scale={scaler.get_scale()}; "
+          "gradient normalization=sample mean before scaled backward", flush=True)
     write_json(run / "runtime.json", {"device": str(device), "amp_enabled": amp, "data_root_current": str(data_root),
+                                     "amp_init_scale": c["training"].get("amp_init_scale", 65536.0),
+                                     "gradient_normalization": "sample-weighted mean before GradScaler.scale/backward",
                                      "effective_batch_size": c["data"]["batch_size"] * c["training"]["accumulation_steps"],
                                      "tail_batch": "sample-weighted; possibly smaller effective batch", "resume": bool(checkpoint),
                                      "resume_limit": "epoch boundaries; exact worker/batch continuity requires same software/device/workers and deterministic kernels"})
@@ -171,7 +205,7 @@ def main(argv=None):
             begun = time.perf_counter()
             model.train()
             optimizer.zero_grad(set_to_none=True)
-            total, samples, group_samples = 0.0, 0, 0
+            total, samples = 0.0, 0
             limit = min(len(train_loader), c["smoke_steps"] or len(train_loader))
             for step, batch in enumerate(train_loader, 1):
                 x, y = batch["input"].to(device), batch["target"].to(device)
@@ -181,22 +215,35 @@ def main(argv=None):
                 finite(pred, f"train output epoch={epoch} IDs={batch['sample_id']}")
                 finite(loss, f"train loss epoch={epoch}")
                 n = len(x)
-                scaler.scale(loss * n).backward()
+                group_samples = accumulation_sample_count(len(train_loader.dataset), c["data"]["batch_size"],
+                                                          c["training"]["accumulation_steps"], step, limit)
+                scaler.scale(normalized_backward_loss(loss, n, group_samples)).backward()
                 total += loss.detach().item() * n
                 samples += n
-                group_samples += n
                 if step % c["training"]["accumulation_steps"] == 0 or step == limit:
                     scaler.unscale_(optimizer)
                     for name, param in model.named_parameters():
                         if param.grad is not None:
-                            param.grad.div_(group_samples)
-                            finite(param.grad, f"gradient {name} epoch={epoch}")
+                            if not torch.isfinite(param.grad).all():
+                                diag = {"stage": "unscaled gradient", "parameter": name, "epoch": epoch,
+                                        "step": step, "sample_ids": batch["sample_id"], "amp_enabled": amp,
+                                        "grad_scaler_scale": scaler.get_scale(), "batch_samples": n,
+                                        "accumulation_group_samples": group_samples, "loss": loss.detach().item(),
+                                        "nan_count": torch.isnan(param.grad).sum().item(),
+                                        "inf_count": torch.isinf(param.grad).sum().item()}
+                                write_json(run / "nonfinite_diagnostic.json", diag)
+                                raise FloatingPointError(
+                                    f"NaN/Inf in gradient {name} epoch={epoch} step={step}; AMP={amp} "
+                                    f"scale={scaler.get_scale()}; no optimizer update applied. "
+                                    f"See {run / 'nonfinite_diagnostic.json'}. "
+                                    "Check a fresh smoke run with an explicitly lower --amp-init-scale; "
+                                    "--fp32-smoke can help distinguish AMP-specific behavior. Do not skip bad gradients."
+                                )
                     scaler.step(optimizer)
                     scaler.update()
                     for name, param in model.named_parameters():
                         finite(param, f"parameter {name} epoch={epoch}")
                     optimizer.zero_grad(set_to_none=True)
-                    group_samples = 0
                 if step == limit:
                     break
             val_rows, val_summary = evaluate_loader(model, val_loader, device, criterion)

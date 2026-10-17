@@ -29,3 +29,18 @@ OMP_NUM_THREADS=1 MPLBACKEND=Agg /tmp/haze4k-codex-venv/bin/python -m pytest \
 另已通过 Python compileall、全部新增 shell 的 `bash -n`、`git diff --check`。最终受保护目录及旧配置/旧 split/旧 experiments 的 `git diff` 为空。原有未跟踪 `haze4k_preflight.py` 未改动。测试仅删除自身创建的临时 run；大型 checkpoint 没有加入仓库。
 
 真实限制：目标 `/root/autodl-tmp/pro/publicdata/Haze4K` 在本机不存在。真实数据全量解码、尺寸统计、实际 SHA256 审计和两组主训练均**待 AutoDL 执行**。真实数据 prepare 通过前不得将用户此前的文件名检查当作完整预检；本记录不证明 CUDA 性能、实际数据零重叠或真实去雾效果。
+
+
+## AMP 修复追加验证（2026-10-17）
+
+服务器实际日志报告 Full 在 epoch1 出现 `backbone.output_conv.weight` 非有限梯度。本机检查发现独立训练入口在 scaled backward 前先乘 batch size、反向后才除回，增加了FP16中间梯度溢出风险。仅修改隔离工程的训练数值处理，改成反向前按真实累积组样本数归一化；没有改动原模型或loss。
+
+实际执行：
+
+```bash
+OMP_NUM_THREADS=1 MPLBACKEND=Agg /tmp/haze4k-codex-venv/bin/python -m pytest tests/test_haze4k_transfer.py -q --durations=5
+```
+
+结果：**15 passed, 1 skipped in 17.22s**。额外测试覆盖：旧计算顺序的FP16 Inf可复现、修正后同例梯度有限；不同累积步数/尾部batch/截断smoke均等价于实际整组均值梯度；非法AMP scale被拒绝；注入Inf梯度后不更新参数、不保存checkpoint并写失败诊断。原合成训练/恢复/eval/compare全链测试再次通过。
+
+新增显式 `--amp-init-scale` 和仅限诊断的 `--fp32-smoke`；默认AMP scale没有静默降低。服务器可尝试两组一致的初始scale1024并先smoke。当前仍没有CUDA，不能声称已在用户GPU上修复或已确定此次日志的全部根因。真实数据与主实验数值仍以AutoDL实际运行结果为准。

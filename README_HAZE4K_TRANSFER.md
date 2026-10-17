@@ -117,6 +117,24 @@ experiments/haze4k_transfer/<variant>_<timestamp>_3520_<suffix>/
 
 NaN/Inf 输出、loss、梯度、参数、指标和坏图都失败，绝不跳过后继续求均值。原指标定义保留完全相同图像的 PSNR=Inf；此工程遇此情况也明确失败并要求调查，而非输出非标准 JSON/置信区间。
 
+## AMP 非有限梯度排错（2026-10-17 修复）
+
+旧训练入口曾在 `backward` 前用 `loss * batch_samples`，然后在反向完成后除以累积组样本数。数学上得到平均梯度，但让 FP16 中间梯度额外放大；batch16 时多出16倍，可能在除回之前已经溢出。已修正为 `scaler.scale(loss * batch_samples / group_samples).backward()`，反向后不再额外除。batch16、accumulation1 时就是直接对原平均 loss 做 scaled backward。loss 实现、模型、学习率和有效 batch 均不变。按不满 batch/累积组的实际样本数加权，回归测试验证与整组均值梯度一致。
+
+默认初始 GradScaler scale 仍为65536，显式写入两组新 YAML。新增 `--amp-init-scale` 可在新运行中覆盖，必须两组使用同一值，写入 resolved config/runtime 并由 compare 核对；不自动跳过异常更新或改变精度。训练仍会因 NaN/Inf 退出，并额外生成 `nonfinite_diagnostic.json`，包含 step、样本 ID、loss、当前 scaler scale、参数名和 NaN/Inf 数量。
+
+先同步更新的 `src/haze4k_transfer/train.py` 到 AutoDL，再从头做两组 smoke。下面显式采用较低初始scale1024，这是排查AMP溢出的运行设置，尚未经本机CUDA验证；两组保持一致并记录。
+
+```bash
+python -m src.haze4k_transfer.train --config configs/haze4k/full_v16.yaml --data-root "$DATA_ROOT" --gpu 0 --amp-init-scale 1024 --smoke-epochs 1 --smoke-steps 2
+python -m src.haze4k_transfer.train --config configs/haze4k/wo_uicf_v15_backbone.yaml --data-root "$DATA_ROOT" --gpu 0 --amp-init-scale 1024 --smoke-epochs 1 --smoke-steps 2
+# 两组 smoke 成功后，正式训练分别使用同一 --amp-init-scale 1024，移除两个 --smoke-* 参数。
+```
+
+若修正归一化且较低scale的AMP smoke仍失败，可对同一组做 `--fp32-smoke --smoke-epochs 1 --smoke-steps 2` 诊断，区别混合精度特有问题；此标志只允许smoke，不能悄悄用于正式200轮。FP32 smoke是否成功不能单独证明所有AMP异常只来自scale。保留失败run和诊断文件，从新随机初始化运行；源码hash变化后旧checkpoint不能恢复/评价，不应修改hash绕过校验。
+
+`run_all.sh` 支持 `AMP_INIT_SCALE=1024 bash scripts/haze4k/run_all.sh`，对两组smoke和正式训练统一覆盖。模型架构、数据划分、原Charbonnier loss和指标定义未改变。
+
 ## 重启恢复
 
 ```bash
@@ -162,7 +180,7 @@ compare 先检查模型类型、checkpoint=best_psnr、模型/训练配置、实
 
 ## 软件测试
 
-本机实际结果：12 passed、1 skipped（无 CUDA，跳过启用 AMP 的恢复测试）。完整交付验证记录见 [HAZE4K_VALIDATION.md](HAZE4K_VALIDATION.md)。AutoDL 有 CUDA 时该测试会实际运行。
+AMP 修复后的本机实际结果：15 passed、1 skipped（无 CUDA，跳过启用 AMP 的恢复测试）。完整交付验证记录见 [HAZE4K_VALIDATION.md](HAZE4K_VALIDATION.md)。AutoDL 有 CUDA 时该测试会实际运行。
 
 ```bash
 OMP_NUM_THREADS=1 MPLBACKEND=Agg python -m pytest tests/test_haze4k_transfer.py -q --durations=10

@@ -247,7 +247,24 @@ def prepare(root, split_dir=DEFAULT_SPLIT, seed=3520, accept_content_overlap=Fal
 
 def validate_bundle(split_dir):
     split_dir = Path(split_dir)
-    meta = json.loads((split_dir / "split_metadata.json").read_text())
+    metadata_path = split_dir / "split_metadata.json"
+    if not metadata_path.is_file():
+        raise FileNotFoundError(
+            f"Haze4K preflight metadata not found: {metadata_path}. "
+            "Run python -m src.haze4k_transfer.prepare --data-root /path/to/Haze4K "
+            f"--seed 3520 --split-dir {str(split_dir)!r} before training. "
+            "If prepare already succeeded in another directory, pass that directory "
+            "with --split-dir when starting training. Do not create metadata manually."
+        )
+    missing = [name for name in ("train.tsv", "validation.tsv", "test.tsv", "inventory.json")
+               if not (split_dir / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Incomplete Haze4K preflight bundle in {split_dir}; missing: {missing}. "
+            "Restore the intact bundle or run prepare in a new empty --split-dir; "
+            "existing split artifacts will not be overwritten."
+        )
+    meta = json.loads(metadata_path.read_text())
     if meta["version"] != VERSION:
         raise ValueError("Unknown split version")
     for name in ["train.tsv", "validation.tsv", "test.tsv", "inventory.json"]:

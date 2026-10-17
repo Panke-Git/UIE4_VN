@@ -29,6 +29,7 @@ data:
 training:
   epochs: 200
   amp: true
+  amp_init_scale: 65536.0
   deterministic: false
   scheduler: none
   accumulation_steps: 1
