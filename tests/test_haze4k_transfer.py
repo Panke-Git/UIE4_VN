@@ -1,0 +1,276 @@
+"""Synthetic software checks only; no real Haze4K performance claims."""
+import copy
+import hashlib
+import json
+from pathlib import Path
+import shutil
+
+import numpy as np
+from PIL import Image
+import pytest
+import torch
+
+torch.set_num_threads(1)
+
+from src.haze4k_transfer import prepare as prep
+from src.haze4k_transfer.compare import align, bootstrap, main as compare, load_result
+from src.haze4k_transfer.dataset import HazeDataset, tensor
+from src.haze4k_transfer.eval import main as evaluate
+from src.haze4k_transfer.models import assert_initial_backbone_equivalence, build_model, canonical_model_config
+from src.haze4k_transfer.train import main as train
+from src.haze4k_transfer.utils import METRICS, ROOT, load_yaml, protocol, save_yaml, torch_load
+from src.v16.losses import CharbonnierLoss
+from src.v16.metrics import batch_metrics, per_image_psnr, per_image_ssim
+
+
+def make_data(root, n=10, nt=3, size=(32, 32)):
+    for official, count, offset in (("train", n, 0), ("test", nt, 100000)):
+        for role in ("haze", "gt", "trans"):
+            (root / official / role).mkdir(parents=True)
+        for i in range(1, count + 1):
+            rng = np.random.default_rng(i + offset)
+            gt = rng.integers(0, 220, (*size, 3), dtype=np.uint8)
+            haze = np.minimum(gt.astype(int) + 20, 255).astype(np.uint8)
+            Image.fromarray(gt).save(root / official / f"gt/{i}.png")
+            Image.fromarray(haze).save(root / official / f"haze/{i}_0.68_0.66.png")
+        # A corrupt image in trans must never be read/scanned as a model source.
+        (root / official / "trans/corrupt.png").write_bytes(b"unused trans")
+    (root / "train/haze/.DS_Store").write_bytes(b"metadata")
+    return root
+
+
+def test_pairing_grouping_determinism_and_trans(tmp_path):
+    root = make_data(tmp_path / "data")
+    shutil.copyfile(root / "train/haze/1_0.68_0.66.png", root / "train/haze/1_0.77_0.9.png")
+    (root / "train/gt/notes.txt").write_text("not an image")
+    split = tmp_path / "split"
+    m = prep.prepare(root, split, synthetic=True)
+    before = {p.name: p.read_bytes() for p in split.iterdir()}
+    prep.prepare(root, split, synthetic=True)
+    assert before == {p.name: p.read_bytes() for p in split.iterdir()}
+    split2 = tmp_path / "split2"
+    m2 = prep.prepare(root, split2, synthetic=True)
+    assert m["hashes"] == m2["hashes"]
+    _, rows, inventory = prep.validate_bundle(split)
+    assert not {r['clean_id'] for r in rows['train']} & {r['clean_id'] for r in rows['validation']}
+    assert sum(len(rows[s]) for s in ('train', 'validation')) == 11
+    assert len(rows['test']) == 3
+    assert not any('trans' in p or '.DS_Store' in p for p in inventory)
+    assert (root / 'train/haze/.DS_Store').read_bytes() == b'metadata'
+    assert any(r['clean_id'] == '1' and r['gt_relative'] == 'test/gt/1.png' for r in rows['test'])
+    assert not any(m['report']['cross_official_content_overlap'].values())
+    assert any(p['path'].endswith('notes.txt') for p in m['report']['train']['non_images'])
+    bad = copy.deepcopy(rows['train'])
+    bad.append(bad[0])
+    with pytest.raises(ValueError, match='Duplicate'):
+        prep.check_rows(bad, 'train')
+    bad = copy.deepcopy(rows['train'])
+    bad[0]['gt_relative'] = 'train/gt/999.png'
+    with pytest.raises(ValueError, match='Incorrect pairing'):
+        prep.check_rows(bad, 'train')
+    with pytest.raises(ValueError, match='refusing rewrite'):
+        prep.prepare(root, split, seed=1, synthetic=True)
+    (split / 'train.tsv').write_bytes((split / 'train.tsv').read_bytes() + b'\n')
+    with pytest.raises(ValueError, match='hash mismatch'):
+        prep.validate_bundle(split)
+
+
+def test_current_scale_2700_300_1000(tmp_path):
+    root = make_data(tmp_path / 'data', 3000, 1000, size=(2, 2))
+    before = {p.name: prep.sha256(p) for p in (root / 'test/gt').iterdir()}
+    m = prep.prepare(root, tmp_path / 'split', synthetic=True)
+    assert m['counts'] == {'train': 2700, 'validation': 300, 'test': 1000}
+    assert before == {p.name: prep.sha256(p) for p in (root / 'test/gt').iterdir()}
+
+
+@pytest.mark.parametrize('kind,pattern', [('missing', 'Missing/ambiguous'), ('ambiguous', 'Ambiguous GT'),
+                                         ('size', 'size mismatch'), ('corrupt', 'Cannot fully decode'), ('unused', 'Unused GT')])
+def test_bad_data(tmp_path, kind, pattern):
+    root = make_data(tmp_path / 'data')
+    if kind == 'missing':
+        (root / 'train/gt/1.png').unlink()
+    elif kind == 'ambiguous':
+        Image.new('RGB', (32, 32)).save(root / 'train/gt/1.jpg')
+    elif kind == 'size':
+        Image.new('RGB', (16, 17)).save(root / 'train/gt/1.png')
+    elif kind == 'corrupt':
+        p = root / 'train/haze/1_0.68_0.66.png'
+        p.write_bytes(p.read_bytes()[:70])  # Valid-looking header, truncated pixels.
+    elif kind == 'unused':
+        Image.new('RGB', (32, 32)).save(root / 'train/gt/999.png')
+    with pytest.raises(ValueError, match=pattern):
+        prep.prepare(root, tmp_path / 'split', synthetic=True)
+
+
+def test_alias_overlap_and_content_immutability(tmp_path):
+    root = make_data(tmp_path / 'data')
+    (root / 'train/hazy').mkdir()
+    with pytest.raises(ValueError, match='exactly one'):
+        prep.scan(root)
+    (root / 'train/hazy').rmdir()
+    shutil.copyfile(root / 'train/gt/1.png', root / 'test/gt/1.png')
+    split = tmp_path / 'split'
+    with pytest.raises(ValueError, match='requires user review'):
+        prep.prepare(root, split, synthetic=True)
+    assert not (split / 'split_metadata.json').exists()
+    report = json.loads((split / 'overlap_review_required.json').read_text())
+    assert report['cross_official_content_overlap']['sha256']
+    prep.prepare(root, split, accept_content_overlap=True, synthetic=True)
+    _, rows, inventory = prep.validate_bundle(split)
+    Image.new('RGB', (32, 32)).save(root / 'train/gt/1.png')
+    with pytest.raises(ValueError, match='changed since'):
+        prep.verify_content(root, rows['train'] + rows['validation'], inventory)
+    # Same RGB content in a differently encoded file is caught separately.
+    Image.open(root / 'train/gt/2.png').save(root / 'test/gt/2.png', compress_level=0)
+    _, _, report = prep.scan(root)
+    assert report['cross_official_content_overlap']['rgb_sha256']
+
+
+def test_transforms_and_pil_protocol(tmp_path):
+    root = make_data(tmp_path / 'data', n=3, nt=2, size=(9, 7))
+    rows, _, _ = prep.scan(root)
+    train = HazeDataset(root, rows['train'], 'train', patch_size=32)
+    sample = train[0]
+    assert sample['input'].shape == sample['target'].shape == (3, 32, 32)
+    # Haze = GT + 20, preserved by every synchronized crop/pad/flip/rotation.
+    assert torch.allclose(sample['input'] - sample['target'], torch.full((3, 32, 32), 20/255), atol=1e-7)
+    dataset = HazeDataset(root, rows['test'], 'test')
+    expected = tensor(Image.open(root / rows['test'][0]['input_relative']).resize((256, 256), Image.Resampling.BILINEAR))
+    assert torch.equal(dataset[0]['input'], expected)
+    assert HazeDataset(root, rows['test'], 'test', resolution='native')[0]['input'].shape == (3, 9, 7)
+
+
+def test_exact_factories_initialization_shapes_backward():
+    from src.shared.uicf_models import UICFPreBackbone
+    from src.shared.color_query_unet import PlainUNetColorQuery
+    full, wo = assert_initial_backbone_equivalence()
+    assert isinstance(full, UICFPreBackbone) and isinstance(wo, PlainUNetColorQuery)
+    np_full = sum(p.numel() for p in full.parameters())
+    np_wo = sum(p.numel() for p in wo.parameters())
+    assert np_full > np_wo
+    assert np_full - np_wo == sum(p.numel() for p in full.uicf.parameters())
+    for model in (full, wo):
+        model.train()
+        x = torch.rand(2, 3, 17, 19)
+        pred = model(x)
+        assert pred.shape == x.shape
+        loss = CharbonnierLoss()(pred, torch.rand_like(pred))
+        loss.backward()
+        assert torch.isfinite(loss)
+        assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+        model.zero_grad(set_to_none=True)
+    bad = canonical_model_config()
+    bad['base_channels'] = 4
+    with pytest.raises(ValueError, match='exactly equal'):
+        build_model('full', bad)
+
+
+def test_metric_mean_and_cluster_bootstrap():
+    x = torch.zeros(2, 3, 16, 16)
+    y = x.clone()
+    y[0] = 0.1
+    y[1] = 0.5
+    ps, ss = batch_metrics(x, y, METRICS)
+    assert torch.equal(ps, per_image_psnr(x, y))
+    assert torch.equal(ss, per_image_ssim(x, y, window_size=11, sigma=1.5))
+    assert not np.isclose(ps.mean().item(), 10 * np.log10(1 / ((x-y)**2).mean().item()))
+    b = bootstrap([1, 1, 2], ['a','a','b'], iterations=2000)
+    assert b == bootstrap([1, 1, 2], ['a','a','b'], iterations=2000)
+    assert b['mean'] == pytest.approx(4/3) and b['clean_groups'] == 2
+    assert b['ci95'] == [1.0, 2.0]
+    with pytest.raises(ValueError):
+        bootstrap([1], ['a'], iterations=100)
+    assert bootstrap([3,3], ['a','b'], iterations=2000)['ci95'] == [3,3]
+
+
+def test_synthetic_train_resume_eval_compare(tmp_path):
+    root = make_data(tmp_path / 'data', n=3, nt=2)
+    split = tmp_path / 'split'
+    prep.prepare(root, split, synthetic=True)
+    runs = []
+    wo_config = None
+    try:
+        for variant, file in [('full', 'full_v16'), ('wo_uicf', 'wo_uicf_v15_backbone')]:
+            c = load_yaml(ROOT / f'configs/haze4k/{file}.yaml')
+            c['training']['deterministic'] = True
+            config = tmp_path / f'{file}.yaml'
+            save_yaml(config, c)
+            if variant == 'wo_uicf':
+                wo_config = config
+            run = train(['--config', str(config), '--data-root', str(root), '--split-dir', str(split),
+                         '--gpu', 'cpu', '--smoke-epochs', '2', '--synthetic-smoke', '--stop-after-epoch', '1'])
+            runs.append(run)
+            before = torch_load(run / 'checkpoint/last.pt')
+            assert before['epoch'] == 1 and before['optimizer']['state']
+            assert 'amp_scaler' in before and 'loader_generator' in before and 'rng' in before
+            with pytest.raises(ValueError, match='completed target'):
+                evaluate(['--run-dir', str(run), '--gpu', 'cpu'])
+            # Resume really restores optimizer/RNG, then completes the second epoch.
+            del before
+            train(['--resume', str(run / 'checkpoint/last.pt'), '--gpu', 'cpu'])
+            after = torch_load(run / 'checkpoint/last.pt')
+            assert after['epoch'] == 2 and len(after['history']) == 2
+            assert all(int(v['step']) == 2 for v in after['optimizer']['state'].values())
+            del after
+            evaluate(['--run-dir', str(run), '--gpu', 'cpu', '--resolution', '256'])
+        # Same CPU/device/workers deterministic epoch-boundary resume must match continuous training exactly.
+        uninterrupted = train(['--config', str(wo_config), '--data-root', str(root), '--split-dir', str(split),
+                               '--gpu', 'cpu', '--smoke-epochs', '2', '--synthetic-smoke'])
+        runs.append(uninterrupted)
+        continuous = torch_load(uninterrupted / 'checkpoint/last.pt')
+        resumed = torch_load(runs[1] / 'checkpoint/last.pt')
+        assert continuous['model'].keys() == resumed['model'].keys()
+        assert all(torch.equal(v, resumed['model'][k]) for k, v in continuous['model'].items())
+        assert torch.equal(continuous['loader_generator'], resumed['loader_generator'])
+        assert torch.equal(continuous['rng']['torch'], resumed['rng']['torch'])
+        del continuous, resumed
+        directory = compare(['--full-run', str(runs[0]), '--wo-run', str(runs[1]), '--bootstrap-iterations', '2000'])
+        assert (directory / 'paper_table.md').is_file()
+        assert 'SYNTHETIC' in (directory / 'paper_table.md').read_text()
+        assert len(list((directory / 'panels').glob('*.png'))) == 2
+        fd, fs, fr = load_result(runs[0], '256')
+        wd, ws, wr = load_result(runs[1], '256')
+        bad = copy.deepcopy(wr)
+        bad.pop(next(iter(bad)))
+        with pytest.raises(ValueError, match='IDs differ'):
+            align(fs, ws, fr, bad, '256')
+        bad = copy.deepcopy(ws)
+        bad['protocol'] = protocol('native')
+        with pytest.raises(ValueError, match='protocol'):
+            align(fs, bad, fr, wr, '256')
+        # Native protocol must preserve odd-sized image dimensions, no silent resize/tile.
+        evaluate(['--run-dir', str(runs[0]), '--gpu', 'cpu', '--resolution', 'native'])
+        bad = copy.deepcopy(ws)
+        bad['checkpoint'] = 'last'
+        with pytest.raises(ValueError, match='checkpoint'):
+            align(fs, bad, fr, wr, '256')
+        # Preserve small evidence, never retain large temporary checkpoints in repository.
+        evidence = tmp_path / 'evidence'
+        shutil.copytree(directory, evidence)
+        print('Synthetic pipeline complete; checkpoint, optimizer, RNG restore and 256/native eval verified.')
+    finally:
+        for run in runs:
+            shutil.rmtree(run)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA unavailable: enabled AMP/scaler restore must run on AutoDL')
+def test_cuda_enabled_amp_resume(tmp_path):
+    root = make_data(tmp_path / 'data', n=3, nt=2)
+    split = tmp_path / 'split'
+    prep.prepare(root, split, synthetic=True)
+    run = None
+    try:
+        run = train(['--config', str(ROOT / 'configs/haze4k/full_v16.yaml'), '--data-root', str(root),
+                     '--split-dir', str(split), '--gpu', '0', '--smoke-epochs', '2', '--synthetic-smoke',
+                     '--stop-after-epoch', '1'])
+        first = torch_load(run / 'checkpoint/last.pt')
+        assert first['amp_scaler']['scale'] > 0 and first['rng']['cuda']
+        tracker = first['amp_scaler']['_growth_tracker']
+        del first
+        train(['--resume', str(run / 'checkpoint/last.pt'), '--gpu', '0'])
+        last = torch_load(run / 'checkpoint/last.pt')
+        assert last['epoch'] == 2
+        assert last['amp_scaler']['_growth_tracker'] == tracker + 1
+    finally:
+        if run:
+            shutil.rmtree(run)

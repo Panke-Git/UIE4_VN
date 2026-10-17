@@ -1,0 +1,7 @@
+# Install/retain a CUDA-compatible PyTorch supplied by the AutoDL image first.
+torch>=2.3
+numpy
+Pillow>=9.1
+PyYAML
+matplotlib
+pytest
