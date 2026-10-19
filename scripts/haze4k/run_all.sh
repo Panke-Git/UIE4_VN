@@ -13,6 +13,7 @@ wo_log="$(mktemp /tmp/haze4k_wo.XXXXXX)"
 # Fair hardware adjustment can be supplied identically: BATCH_SIZE=8 ACCUMULATION_STEPS=2.
 shared=(--gpu "$GPU" --data-root "$HAZE4K_ROOT" --batch-size "${BATCH_SIZE:-16}" --accumulation-steps "${ACCUMULATION_STEPS:-1}")
 if [[ -n "${AMP_INIT_SCALE:-}" ]]; then shared+=(--amp-init-scale "$AMP_INIT_SCALE"); fi
+if [[ -n "${AMP_MAX_SCALE:-}" ]]; then shared+=(--amp-max-scale "$AMP_MAX_SCALE"); fi
 # Actual selected GPU, unchanged 256-pixel patch and model; two batches per variant.
 # Validation still uses the entire fixed validation split. Smoke checkpoints are never tested for paper use.
 bash scripts/haze4k/train_full.sh "${shared[@]}" --smoke-epochs 1 --smoke-steps 2

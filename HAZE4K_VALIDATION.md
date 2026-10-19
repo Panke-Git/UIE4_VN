@@ -44,3 +44,27 @@ OMP_NUM_THREADS=1 MPLBACKEND=Agg /tmp/haze4k-codex-venv/bin/python -m pytest tes
 结果：**15 passed, 1 skipped in 17.22s**。额外测试覆盖：旧计算顺序的FP16 Inf可复现、修正后同例梯度有限；不同累积步数/尾部batch/截断smoke均等价于实际整组均值梯度；非法AMP scale被拒绝；注入Inf梯度后不更新参数、不保存checkpoint并写失败诊断。原合成训练/恢复/eval/compare全链测试再次通过。
 
 新增显式 `--amp-init-scale` 和仅限诊断的 `--fp32-smoke`；默认AMP scale没有静默降低。服务器可尝试两组一致的初始scale1024并先smoke。当前仍没有CUDA，不能声称已在用户GPU上修复或已确定此次日志的全部根因。真实数据与主实验数值仍以AutoDL实际运行结果为准。
+
+## 中后期 GradScaler 增长上限验证（2026-10-19）
+
+用户真实日志：Full 完成epoch26，在epoch27/step54的UICF intro权重梯度出现非有限值；当前scale262144。本机未访问该服务器或checkpoint。默认2000次成功更新自动增长的行为使“仅降低初始scale”不足以限制后续scale；不能据此宣称已经确定真实模型异常的唯一根因。
+
+本次隔离修改：train.py新增显式 `--amp-max-scale`、每epoch scale遥测及成功增长的上限日志；新增precision.py（公共GradScaler状态API）及recover.py（保留源run的诊断恢复分支）。两份新任务YAML默认上限null，没有静默改变旧协议。原V15/V16/shared、旧配置、split和实验均无git diff。
+
+实际执行：
+
+```bash
+OMP_NUM_THREADS=1 MPLBACKEND=Agg /tmp/haze4k-codex-venv/bin/python -m pytest tests/test_haze4k_transfer.py -q --durations=5
+```
+
+最终结果：**19 passed, 1 skipped in 21.73s**。跳过项仍为真实CUDA启用AMP的模型恢复测试。
+
+新增实际覆盖：
+
+- 使用CPU公共GradScaler、默认growth_interval=2000和真实FP16反向中间量，未限制scale的合成示例在第4001步/scale262144溢出；同例初始及上限1024完成4500步、梯度有限。此为数值回归测试，不能代替真实CUDA模型测试。
+- 触及上限后限制下一次反向使用的scale；普通checkpoint恢复保留growth tracker；上限为None保持旧策略；非法上限/初始值组合被拒绝。
+- 恢复分支只接受当前或精确审阅过的历史源码hash。未知主干、UICF、loss、指标或其他源码变化仍拒绝，不存在通用忽略hash开关。
+- 实际从一轮合成checkpoint创建新恢复run，源run逐文件SHA256不变；模型所有张量、Python/Torch RNG、loader generator保持；AdamW继续推进第二轮；恢复eval可用。兼容旧历史缺少scale遥测的schema，未知值保留为空。
+- 恢复分支强制smoke=true并保存paper_eligible=false及完整来源配置/hash/数值策略。它是中途切换数值策略的排错支路，不冒充统一正式协议。
+
+仍保留全部非有限输出/loss/梯度/参数/指标的失败检查，不自动跳过/重试坏样本或坏更新。真实Haze4K能否在上限1024下越过第27轮且完成200轮，仍待用户AutoDL实际验证；本机未新增真实去雾指标。

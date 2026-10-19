@@ -17,8 +17,10 @@ from src.haze4k_transfer.compare import align, bootstrap, main as compare, load_
 from src.haze4k_transfer.dataset import HazeDataset, tensor
 from src.haze4k_transfer.eval import main as evaluate
 from src.haze4k_transfer.models import assert_initial_backbone_equivalence, build_model, canonical_model_config
+from src.haze4k_transfer.precision import cap_scaler, cap_scale_state, validate_scale_policy
+from src.haze4k_transfer.recover import main as recover, validate_recovery_sources, LEGACY_TRAIN_SHA256, LEGACY_PREPARE_SHA256
 from src.haze4k_transfer.train import accumulation_sample_count, normalized_backward_loss, main as train, validate_config
-from src.haze4k_transfer.utils import METRICS, ROOT, load_yaml, protocol, save_yaml, torch_load
+from src.haze4k_transfer.utils import METRICS, ROOT, load_yaml, protocol, save_yaml, source_hashes, torch_load
 from src.v16.losses import CharbonnierLoss
 from src.v16.metrics import batch_metrics, per_image_psnr, per_image_ssim
 
@@ -218,6 +220,83 @@ def test_amp_configuration_is_explicit():
         train(['--config', str(ROOT / 'configs/haze4k/full_v16.yaml'), '--fp32-smoke'])
 
 
+def test_scale_ceiling_handles_real_scaler_growth_and_restore():
+    # Public GradScaler APIs can be exercised on CPU without claiming CUDA validation.
+    weight = torch.tensor(0.2, requires_grad=True)
+    optimizer = torch.optim.SGD([weight], lr=0.01)
+    scaler = torch.amp.GradScaler('cpu', init_scale=1024, growth_interval=2)
+    events = 0
+    for i in range(31):
+        optimizer.zero_grad(set_to_none=True)
+        scaler.scale(weight.square()).backward()
+        scaler.unscale_(optimizer)
+        assert torch.isfinite(weight.grad)
+        scaler.step(optimizer)
+        scaler.update()
+        events += int(cap_scaler(scaler, 1024))
+        assert scaler.get_scale() <= 1024
+        if i == 14:
+            state = scaler.state_dict()
+            restored = torch.amp.GradScaler('cpu', init_scale=1024, growth_interval=2)
+            restored.load_state_dict(state)
+            assert not cap_scaler(restored, 1024)
+            assert restored.state_dict() == state  # Ordinary resume must not reset its growth tracker.
+            scaler = restored
+    assert events == 15
+    legacy = {'scale': 262144.0, 'growth_factor': 2., 'backoff_factor': 0.5,
+              'growth_interval': 2000, '_growth_tracker': 448}
+    capped = cap_scale_state(legacy, 1024)
+    assert legacy['scale'] == 262144 and legacy['_growth_tracker'] == 448
+    assert capped['scale'] == 1024 and capped['_growth_tracker'] == 0
+    assert cap_scale_state({}, 1024) == {}
+    with pytest.raises(ValueError, match='<='):
+        validate_scale_policy(65536, 1024)
+    with pytest.raises(ValueError):
+        validate_scale_policy(1024, float('inf'))
+
+
+@pytest.mark.parametrize('bounded', [False, True])
+def test_default_growth_interval_can_overflow_later_even_after_successful_early_steps(bounded):
+    # Real default 2000-update growth cadence and an actual FP16 backward intermediate.
+    # This is a synthetic numerical regression, not a claim about the user's CUDA model.
+    weight = torch.tensor(0.2, requires_grad=True)
+    optimizer = torch.optim.SGD([weight], lr=0.)
+    scaler = torch.amp.GradScaler('cpu', init_scale=1024 if bounded else 65536)
+    failure = None
+    for step in range(1, 4501):
+        optimizer.zero_grad(set_to_none=True)
+        loss = weight.to(torch.float16).float() * 0.25
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        if not torch.isfinite(weight.grad):
+            failure = step
+            break  # Same fail-fast behavior: no step/update after a nonfinite gradient.
+        scaler.step(optimizer)
+        scaler.update()
+        cap_scaler(scaler, 1024 if bounded else None)
+    if bounded:
+        assert failure is None and step == 4500 and scaler.get_scale() == 1024
+    else:
+        assert failure == 4001 and scaler.get_scale() == 262144
+
+
+def test_recovery_rejects_unreviewed_model_or_source_changes():
+    current = source_hashes()
+    old = {k: v for k, v in current.items() if not k.endswith(('precision.py', 'recover.py'))}
+    old['src/haze4k_transfer/train.py'] = LEGACY_TRAIN_SHA256
+    old['src/haze4k_transfer/prepare.py'] = LEGACY_PREPARE_SHA256
+    differences = validate_recovery_sources(old, current)
+    assert 'src/haze4k_transfer/train.py' in differences
+    bad = dict(old)
+    bad['src/shared/uicf_inr.py'] = 'unreviewed'
+    with pytest.raises(ValueError, match='unreviewed source'):
+        validate_recovery_sources(bad, current)
+    bad = dict(old)
+    bad['src/haze4k_transfer/train.py'] = 'unreviewed'
+    with pytest.raises(ValueError, match='unreviewed source'):
+        validate_recovery_sources(bad, current)
+
+
 def test_nonfinite_gradients_still_fail_without_update(tmp_path, monkeypatch):
     import importlib
     module = importlib.import_module('src.haze4k_transfer.train')
@@ -275,6 +354,44 @@ def test_synthetic_train_resume_eval_compare(tmp_path):
             before = torch_load(run / 'checkpoint/last.pt')
             assert before['epoch'] == 1 and before['optimizer']['state']
             assert 'amp_scaler' in before and 'loader_generator' in before and 'rng' in before
+            if variant == 'full':
+                # Build a recovery from a simulated pre-ceiling, recognized historical source version.
+                # Remove only telemetry absent in the historical format, preserving actual trained state.
+                for item in before['history']:
+                    item.pop('amp_scale', None)
+                    item.pop('amp_max_scale', None)
+                before['source_hashes'] = {k: v for k, v in before['source_hashes'].items()
+                                           if not k.endswith(('precision.py', 'recover.py'))}
+                before['source_hashes']['src/haze4k_transfer/train.py'] = LEGACY_TRAIN_SHA256
+                before['source_hashes']['src/haze4k_transfer/prepare.py'] = LEGACY_PREPARE_SHA256
+                # Keep the source run for ordinary-resume tests intact by making a separate fixture run.
+                import uuid
+                historical = run.parent / f'full_legacy_fixture_{uuid.uuid4().hex}'
+                shutil.copytree(run, historical, ignore=shutil.ignore_patterns('checkpoint'))
+                (historical / 'checkpoint').mkdir()
+                torch.save(before, historical / 'checkpoint/last.pt')
+                torch.save(before, historical / 'checkpoint/best_psnr.pt')
+                runs.append(historical)
+                prior = {p.relative_to(historical).as_posix(): prep.sha256(p) for p in historical.rglob('*') if p.is_file()}
+                branch = recover(['--checkpoint', str(historical / 'checkpoint/last.pt'), '--amp-max-scale', '1024'])
+                runs.append(branch)
+                assert prior == {p.relative_to(historical).as_posix(): prep.sha256(p) for p in historical.rglob('*') if p.is_file()}
+                branch_cp = torch_load(branch / 'checkpoint/last.pt')
+                assert branch_cp['epoch'] == 1 and branch_cp['config']['smoke']
+                assert all(torch.equal(value, branch_cp['model'][name]) for name, value in before['model'].items())
+                assert branch_cp['rng']['python'] == before['rng']['python']
+                assert torch.equal(branch_cp['rng']['torch'], before['rng']['torch'])
+                assert torch.equal(branch_cp['loader_generator'], before['loader_generator'])
+                del branch_cp
+                train(['--resume', str(branch / 'checkpoint/last.pt'), '--gpu', 'cpu'])
+                branch_cp = torch_load(branch / 'checkpoint/last.pt')
+                assert branch_cp['epoch'] == 2 and branch_cp['config']['training']['amp_max_scale'] == 1024
+                assert len(branch_cp['history']) == 2
+                assert all(int(v['step']) == 2 for v in branch_cp['optimizer']['state'].values())
+                del branch_cp
+                evaluate(['--run-dir', str(branch), '--gpu', 'cpu', '--resolution', '256'])
+                recovered_summary = json.loads((branch / 'test_256/summary.json').read_text())
+                assert recovered_summary['smoke']  # Mixed-policy recovery cannot masquerade as a main run.
             with pytest.raises(ValueError, match='completed target'):
                 evaluate(['--run-dir', str(run), '--gpu', 'cpu'])
             # Resume really restores optimizer/RNG, then completes the second epoch.
@@ -290,18 +407,19 @@ def test_synthetic_train_resume_eval_compare(tmp_path):
                                '--gpu', 'cpu', '--smoke-epochs', '2', '--synthetic-smoke'])
         runs.append(uninterrupted)
         continuous = torch_load(uninterrupted / 'checkpoint/last.pt')
-        resumed = torch_load(runs[1] / 'checkpoint/last.pt')
+        wo_run = next(r for r in runs if r.name.startswith('wo_uicf_'))
+        resumed = torch_load(wo_run / 'checkpoint/last.pt')
         assert continuous['model'].keys() == resumed['model'].keys()
         assert all(torch.equal(v, resumed['model'][k]) for k, v in continuous['model'].items())
         assert torch.equal(continuous['loader_generator'], resumed['loader_generator'])
         assert torch.equal(continuous['rng']['torch'], resumed['rng']['torch'])
         del continuous, resumed
-        directory = compare(['--full-run', str(runs[0]), '--wo-run', str(runs[1]), '--bootstrap-iterations', '2000'])
+        directory = compare(['--full-run', str(runs[0]), '--wo-run', str(wo_run), '--bootstrap-iterations', '2000'])
         assert (directory / 'paper_table.md').is_file()
         assert 'SYNTHETIC' in (directory / 'paper_table.md').read_text()
         assert len(list((directory / 'panels').glob('*.png'))) == 2
         fd, fs, fr = load_result(runs[0], '256')
-        wd, ws, wr = load_result(runs[1], '256')
+        wd, ws, wr = load_result(wo_run, '256')
         bad = copy.deepcopy(wr)
         bad.pop(next(iter(bad)))
         with pytest.raises(ValueError, match='IDs differ'):

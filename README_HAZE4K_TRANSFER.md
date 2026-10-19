@@ -117,6 +117,43 @@ experiments/haze4k_transfer/<variant>_<timestamp>_3520_<suffix>/
 
 NaN/Inf 输出、loss、梯度、参数、指标和坏图都失败，绝不跳过后继续求均值。原指标定义保留完全相同图像的 PSNR=Inf；此工程遇此情况也明确失败并要求调查，而非输出非标准 JSON/置信区间。
 
+## AMP 中后期溢出：限制增长上限（2026-10-19）
+
+用户真实日志显示 Full 正常训练26轮后，在 epoch27/step54 的 `uicf.encoder.intro.0.weight` 梯度非有限，当前 scaler scale 为262144。此前仅暴露初始scale的处理不足：GradScaler会自动增长，默认每2000次成功更新乘2。2700样本/batch16每轮169个更新，运行到此已经超过4000次更新。该日志与从65536增长两次的轨迹一致，但实际初始值仍须以该run配置/checkpoint为准，不能仅凭日志声称唯一根因已确定。小于两轮的smoke也不能排除这种中后期增长风险。
+
+新增 `--amp-max-scale` 作为显式增长上限：仅在成功的 optimizer update 和 scaler.update 后，通过公开的 state_dict/load_state_dict API 限制下一次反向使用的scale；不跳过坏梯度、不重试坏batch、不修改学习率、模型或loss。默认 `amp_max_scale: null` 保留原来无上限策略，**不静默改变已有协议**。初始值必须小于等于上限。每epoch日志/checkpoint记录实际scale；触及上限写 `amp_scale_events.jsonl`；compare通过训练配置拒绝两组上限不同的正式结果。
+
+先同步整个 `src/haze4k_transfer/`（此次涉及 train.py，并新增 precision.py/recover.py）。两组可显式从头采用同一稳定性策略：
+
+```bash
+DATA_ROOT=/root/autodl-tmp/pro/publicdata/Haze4K
+# 先各自添加 --smoke-epochs 1 --smoke-steps 2 排查显存和入口。
+# Full 独立200轮：
+python -m src.haze4k_transfer.train --config configs/haze4k/full_v16.yaml --data-root "$DATA_ROOT" --gpu 0 --amp-init-scale 1024 --amp-max-scale 1024
+# w/o UICF 独立200轮：
+python -m src.haze4k_transfer.train --config configs/haze4k/wo_uicf_v15_backbone.yaml --data-root "$DATA_ROOT" --gpu 0 --amp-init-scale 1024 --amp-max-scale 1024
+# 完整脚本同样可统一设置：
+# AMP_INIT_SCALE=1024 AMP_MAX_SCALE=1024 bash scripts/haze4k/run_all.sh
+```
+
+1024是显式选择的排错上限，不代表已在用户GPU证明始终安全。若仍在此上限报错，保留diagnostic并检查同一模型/数据在FP32的行为，不能宣称所有异常都来自scale，不能改seed或跳样本绕过。主实验两组始终使用同一数值策略，实际配置如实报告。
+
+为避免丢失26轮排错进度，新增只读源run的 **diagnostic recovery fork**：
+
+```bash
+python -m src.haze4k_transfer.recover \
+  --checkpoint experiments/haze4k_transfer/full_20261018T001314162922Z_3520_442280/checkpoint/last.pt \
+  --amp-max-scale 1024
+```
+
+这条路径来自用户实际日志。程序先检查文件中真实epoch（不假定一定是26）、原始源码hash、完整清单/hash、模型/优化器有限性、best与验证历史一致性。仅接受当前源码或已审阅的上个版本trainer及prepare错误提示差异，模型/损失/指标/数据实现的未知变化一律拒绝；没有通用忽略hash开关。
+
+程序新建 `<variant>_recovery_<timestamp>.../`，保持原run所有文件不变，保存 `recovery.json`（原checkpoint SHA256、原源码hash/配置/scale和修改原因），恢复model/AdamW、RNG、采样generator、验证历史、best，重设scale至1024和增长计数器至0。它打印实际新run的resume命令；执行该命令即从last的下一轮开始。可在打印命令后加 `--stop-after-epoch 27`，先确认是否跨过原失败点，然后用同一个新run的last继续。
+
+**恢复分支改变了中途数值策略，因此强制 smoke=true、paper_eligible=false；用于排错，不能冒充全程固定上限的正式结果。** 原始独立训练来源被保留，没有加载LSUI/UIEB权重。它不破坏普通resume的严格源码/配置校验，也不改写原best。正式公平结果应两组从头采用同一声明的上限。若希望使用分阶段策略作为正式实验，需另行预先定义两组相同的分阶段协议；当前工具不会自动批准此用途。
+
+CPU回归测试实际使用默认2000次增长间隔及真实FP16反向中间量：无上限示例在第4001步溢出，此时scale262144；初始/上限同为1024的示例完成4500步且梯度有限。另检查真实GradScaler增长/恢复、历史恢复分支及原run逐文件hash不变。它是数值软件证据，不是用户CUDA模型在真实数据上必然通过的证明。
+
 ## AMP 非有限梯度排错（2026-10-17 修复）
 
 旧训练入口曾在 `backward` 前用 `loss * batch_samples`，然后在反向完成后除以累积组样本数。数学上得到平均梯度，但让 FP16 中间梯度额外放大；batch16 时多出16倍，可能在除回之前已经溢出。已修正为 `scaler.scale(loss * batch_samples / group_samples).backward()`，反向后不再额外除。batch16、accumulation1 时就是直接对原平均 loss 做 scaled backward。loss 实现、模型、学习率和有效 batch 均不变。按不满 batch/累积组的实际样本数加权，回归测试验证与整组均值梯度一致。
@@ -180,7 +217,7 @@ compare 先检查模型类型、checkpoint=best_psnr、模型/训练配置、实
 
 ## 软件测试
 
-AMP 修复后的本机实际结果：15 passed、1 skipped（无 CUDA，跳过启用 AMP 的恢复测试）。完整交付验证记录见 [HAZE4K_VALIDATION.md](HAZE4K_VALIDATION.md)。AutoDL 有 CUDA 时该测试会实际运行。
+增长上限修复后的本机测试结果见 HAZE4K_VALIDATION.md；此前 AMP 归一化修复结果为15 passed、1 skipped（无 CUDA，跳过启用 AMP 的恢复测试）。完整交付验证记录见 [HAZE4K_VALIDATION.md](HAZE4K_VALIDATION.md)。AutoDL 有 CUDA 时该测试会实际运行。
 
 ```bash
 OMP_NUM_THREADS=1 MPLBACKEND=Agg python -m pytest tests/test_haze4k_transfer.py -q --durations=10
@@ -206,6 +243,9 @@ OMP_NUM_THREADS=1 MPLBACKEND=Agg python -m pytest tests/test_haze4k_transfer.py 
 # 若 smoke OOM，明确两组改为相同 BATCH_SIZE=8 ACCUMULATION_STEPS=2 后重跑本脚本；不会自动调整。
 export BATCH_SIZE=16
 export ACCUMULATION_STEPS=1
+# 显式为两组统一采用受限AMP数值策略，防止只降低初始值后再次增长。
+export AMP_INIT_SCALE=1024
+export AMP_MAX_SCALE=1024
 bash scripts/haze4k/run_all.sh
 ```
 
