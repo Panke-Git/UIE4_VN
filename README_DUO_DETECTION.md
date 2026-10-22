@@ -171,6 +171,8 @@ python -m src.downstream_duo.model_inference_v16 \
 
 独立包装器直接复用 `src.v16.models.network.build_model`，**不调用** LSUI 配对 test 入口。验证 run/checkpoint version=v16、`resolved_config.model == config.model`、sigmoid、run 与 checkpoint 数据集都标识 LSUI 且无 Haze4K 数据标识；然后 `load_state_dict(..., strict=True)`。provenance 来自可信 run 配置及 checkpoint，不声称从权重数值反推出真实训练集。仅加载可信本地 PyTorch checkpoint。`eval()`、所有参数 `requires_grad=False`、`torch.inference_mode()`，不计算或更新增强器梯度。
 
+兼容早期缺少 `data.dataset` 的 V16 run：要求 `data.root` 和 train/validation/test 三份 manifest 路径均有明确的 LSUI 路径组件（例如 `LSUI19_dup_train`、`split/lsui19/train.tsv`），并核对 run 配置与 checkpoint 中这些来源字段一致。任一来源字段指向 Haze4K、信息不足或相互冲突均拒绝；不会通过实验目录名字猜测来源。核验方法和原始字段保存在 enhancement manifest 的 `provenance.training_provenance` 中。历史 LSUI 训练集本身不必重新上传；无需修改旧 run 配置或 checkpoint。
+
 源码审计：V16 → shared UICFPreBackbone → V15 Color-Query U-Net → V4 PlainUNet，四次 pooling，`padding_factor=16`。包装器以原生 RGB `[0,1]` 输入，在右/下补到16倍数（reflect，不满足小图约束时 replicate），准确裁回；不进行256缩小/放大。padding 在整条 UICF+backbone 前应用，固定边界语义并记录。输出 sigmoid `[0,1]`，检查有限数值、原尺寸，`round(255*x)` 保存 RGB PNG。
 
 默认 `--tile-size 0` 为原生全图模式。OOM 会失败并写日志，**不会隐式切换推理协议**。如果在预先显存试运行中确定需要 tiled 推理，在独立的新输出目录显式指定，例如：

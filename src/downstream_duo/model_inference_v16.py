@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 import time
 
 import numpy as np
@@ -13,6 +14,41 @@ import yaml
 
 from .utils import (OUTPUT, fresh_dir, load_prepared, output_path, pair_identity,
                     read_json, sha256, versions, write_json)
+
+
+def _lsui_provenance(data, label):
+    """Accept explicit LSUI metadata or the legacy LSUI root + three manifests.
+
+    This checks trusted training metadata, not the current existence of the LSUI
+    dataset. DUO inference must not require uploading the training dataset again.
+    """
+    if not isinstance(data, dict):
+        raise ValueError(f"{label}: training data metadata must be a mapping")
+    fields = ("dataset", "root", "train_manifest", "validation_manifest", "test_manifest")
+    source = {key: str(data.get(key) or "").strip().replace("\\", "/").rstrip("/")
+              for key in fields}
+    # Inspect source identifiers only; unrelated descriptive text is not provenance.
+    if any("haze" in value.lower() for value in source.values()):
+        raise ValueError(f"{label}: Haze4K training provenance is forbidden: {source}")
+    dataset = source["dataset"].lower()
+    if dataset:
+        if not dataset.startswith("lsui"):
+            raise ValueError(f"{label}: expected LSUI dataset, got {source['dataset']!r}")
+        method = "data.dataset"
+    else:
+        def lsui_component(path):
+            return next((part for part in path.lower().split("/")
+                         if re.match(r"^lsui\d*(?:$|[_.-])", part)), None)
+        required = ("root", "train_manifest", "validation_manifest", "test_manifest")
+        missing = [key for key in required if not lsui_component(source[key])]
+        if missing:
+            raise ValueError(
+                f"{label}: data.dataset is absent; legacy LSUI provenance requires an LSUI "
+                f"root and all three LSUI manifests. Missing/ambiguous fields: {missing}; {source}"
+            )
+        dataset = re.match(r"lsui\d*", lsui_component(source["root"])).group()
+        method = "legacy_root_and_manifests"
+    return {"dataset": dataset, "method": method, "source_fields": source}
 
 
 def load_v16(run_dir, selector="best_psnr", device="cpu"):
@@ -27,9 +63,7 @@ def load_v16(run_dir, selector="best_psnr", device="cpu"):
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if config.get("experiment", {}).get("version") != "v16":
         raise ValueError("Only canonical V16 is accepted; Haze4K/other versions are forbidden")
-    dataset = str(config.get("data", {}).get("dataset", "")).lower()
-    if not dataset.startswith("lsui") or "haze" in str(config.get("data", {})).lower():
-        raise ValueError("Enhancer provenance must identify LSUI training, never Haze4K")
+    run_provenance = _lsui_provenance(config.get("data"), "Run config")
     if config["model"].get("output_activation") != "sigmoid":
         raise ValueError("Expected V16 RGB sigmoid output")
     uicf = config["model"].get("uicf", {})
@@ -44,10 +78,9 @@ def load_v16(run_dir, selector="best_psnr", device="cpu"):
     resolved = checkpoint.get("resolved_config", {})
     if resolved.get("model") != config["model"]:
         raise ValueError("Checkpoint architecture differs from config_resolved.yaml")
-    if str(resolved.get("data", {}).get("dataset", "")).lower() != dataset:
+    checkpoint_provenance = _lsui_provenance(resolved.get("data"), "Checkpoint")
+    if checkpoint_provenance["source_fields"] != run_provenance["source_fields"]:
         raise ValueError("Checkpoint LSUI provenance differs from run configuration")
-    if "haze" in str(resolved.get("data", {})).lower():
-        raise ValueError("Haze4K checkpoint is forbidden")
     from src.v16.models.network import build_model
     model = build_model(config["model"])
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
@@ -57,7 +90,8 @@ def load_v16(run_dir, selector="best_psnr", device="cpu"):
         raise ValueError(f"Source architecture padding factor changed: {factor}")
     return model, {"run_dir": str(run), "checkpoint": str(checkpoint_path),
                    "checkpoint_sha256": sha256(checkpoint_path), "config_sha256": sha256(config_path),
-                   "dataset": dataset, "epoch": checkpoint.get("epoch"), "selector": selector,
+                   "dataset": run_provenance["dataset"], "epoch": checkpoint.get("epoch"), "selector": selector,
+                   "training_provenance": {"run": run_provenance, "checkpoint": checkpoint_provenance},
                    "padding_factor": factor, "model_config": config["model"]}
 
 

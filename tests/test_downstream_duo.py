@@ -13,7 +13,7 @@ from src.downstream_duo.prepare import coco_to_yolo, prepare, split_train
 from src.downstream_duo.model_inference_v16 import (enhance_tensor, enhance_test, load_v16,
                                                     pad_tensor, validate_enhanced)
 from src.downstream_duo.smoke import synthetic_coco, synthetic_v16_run
-from src.downstream_duo.utils import load_prepared, read_json, sha256, write_json
+from src.downstream_duo.utils import load_prepared, read_json, sha256, write_json, write_yaml
 
 
 @pytest.fixture
@@ -214,6 +214,75 @@ def test_checkpoint_rejections(v16, mode):
         checkpoint["resolved_config"]["data"]["dataset"] = "Haze4K"
     torch.save(checkpoint, path)
     with pytest.raises((ValueError, RuntimeError)):
+        load_v16(v16)
+
+
+LEGACY_LSUI_DATA = {
+    "root": "/root/autodl-tmp/pro/publicdata/LSUI19_dup_train",
+    "train_manifest": "split/lsui19/train.tsv",
+    "validation_manifest": "split/lsui19/validation.tsv",
+    "test_manifest": "split/lsui19/test.tsv",
+    "patch_size": 256,
+}
+
+
+def set_training_metadata(run, data, checkpoint_data=None):
+    config_path, checkpoint_path = run / "config_resolved.yaml", run / "best/best_psnr.pt"
+    import yaml
+    config = yaml.safe_load(config_path.read_text())
+    checkpoint = torch.load(checkpoint_path, weights_only=False)
+    config["data"] = deepcopy(data)
+    checkpoint["resolved_config"]["data"] = deepcopy(data if checkpoint_data is None else checkpoint_data)
+    write_yaml(config_path, config)
+    torch.save(checkpoint, checkpoint_path)
+
+
+def test_legacy_lsui_run_without_dataset_field_loads_readonly(v16):
+    set_training_metadata(v16, LEGACY_LSUI_DATA)
+    files = [v16 / "config_resolved.yaml", v16 / "best/best_psnr.pt"]
+    hashes = [sha256(path) for path in files]
+    model, provenance = load_v16(v16)
+    assert provenance["dataset"] == "lsui19"
+    assert provenance["training_provenance"]["run"]["method"] == "legacy_root_and_manifests"
+    assert provenance["training_provenance"]["checkpoint"] == provenance["training_provenance"]["run"]
+    assert hashes == [sha256(path) for path in files]
+    assert not model.training and not any(p.requires_grad for p in model.parameters())
+
+
+@pytest.mark.parametrize("field,value", [
+    ("root", "/data/Haze4K"),
+    ("train_manifest", "split/haze4k/train.tsv"),
+    ("validation_manifest", "split/haze4k/validation.tsv"),
+    ("test_manifest", "split/haze4k/test.tsv"),
+    ("dataset", "Haze4K"),
+    ("dataset", "UIEB"),
+    ("root", "/data/not_lsui"),
+    ("train_manifest", "split/unknown/train.tsv"),
+    ("validation_manifest", ""),
+    ("test_manifest", ""),
+])
+def test_legacy_lsui_requires_unambiguous_source_on_both_sides(v16, field, value):
+    invalid = {**LEGACY_LSUI_DATA, field: value}
+    for config_data, checkpoint_data in ((invalid, LEGACY_LSUI_DATA), (LEGACY_LSUI_DATA, invalid)):
+        set_training_metadata(v16, config_data, checkpoint_data)
+        with pytest.raises(ValueError):
+            load_v16(v16)
+
+
+def test_legacy_run_checkpoint_source_mismatch_rejected(v16):
+    set_training_metadata(v16, LEGACY_LSUI_DATA,
+                          {**LEGACY_LSUI_DATA, "train_manifest": "split/lsui19/other_train.tsv"})
+    with pytest.raises(ValueError, match="provenance differs"):
+        load_v16(v16)
+
+
+def test_explicit_lsui_still_rejects_haze_source_and_ignores_unrelated_notes(v16):
+    data = {**LEGACY_LSUI_DATA, "dataset": "LSUI19", "notes": "Haze4K is a separate experiment"}
+    set_training_metadata(v16, data)
+    _, provenance = load_v16(v16)
+    assert provenance["training_provenance"]["run"]["method"] == "data.dataset"
+    set_training_metadata(v16, {**data, "root": "/data/Haze4K"})
+    with pytest.raises(ValueError, match="Haze4K"):
         load_v16(v16)
 
 
