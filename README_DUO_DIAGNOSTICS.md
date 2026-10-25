@@ -122,7 +122,7 @@ cat "$RUN/input_integrity_after.json"
 
 输出 `audit/audit_protocol.{json,md}`：
 
-- 独立解析原 COCO test；检查 image/annotation/category IDs，显式使用已记录的 clipping/drop 策略，重建期望 bbox，再与每图 YOLO 坐标比较（绝对误差<=1e-5原图像素）。校验实际更改的 annotation ID 列表与准备阶段更改日志一致。
+- 独立解析原 COCO test；检查 image/annotation/category IDs，显式使用已记录的 clipping/drop 策略，重建期望 bbox，再与每图 YOLO 坐标作同类别、一一匹配比较（绝对误差<=1e-5原图像素，不依赖框的排列顺序）。校验实际更改的 annotation ID 列表与准备阶段更改日志一致。
 - 每张图验证源路径唯一对应、原始 file_name、prepared stem、官方 split、Raw/Full ID集合、manifest记录、真实文件集合、尺寸、RGB PNG模式、图像和标签 hash。逐图比较原始 RGB 解码与 prepared Raw PNG；允许的工程解码差异上限为1个uint8级，并完整记录非零差异，不武断认定是库版本造成。Full label与Raw label字节一致。不同 split 的 numeric ID重用不单独判泄漏。
 - 原始 COCO JSON与准备快照逐条核对；两个 prediction 导出检查 ID、类别和图像几何；空预测图依然必须出现在逐图导出中。COCO validator导出允许省略空预测图。
 - 读取原 Raw/Full metrics JSON，核对同一 YOLO path/hash、参数、版本、整集 identity/GT hash。原始训练登记的 evaluation参数也要匹配，直接读取实际 best.pt，记录 detector task/classes/yaml，不下载替代模型。
@@ -227,3 +227,11 @@ tail -n 30 "$RUN/full_vs_tiled_inference.log"
 本地已实际执行38项自动测试（其中1项核验已运行的合成smoke收据），以及5个Python入口的`--help`、shell语法与帮助检查。普通云端单测没有本地合成收据时为37项通过、1项跳过。另用3张合成图、已有的合成YOLO权重和随机小型V16，在CPU上跑通协议审计、Identity、tiled重放、full-native、三条件子集评估和最终报告；本次没有训练模型。合成指标不用于论文或真实下降归因。
 
 软件smoke前后126个受保护文件的SHA256一致，未发现新增源目录缓存。`git diff --exit-code`确认原有受版本控制文件无变更。真实1111张Identity评估、真实LSUI V16 native GPU推理、实际OOM证据及真实子集AP仍待AutoDL运行；本地报告没有将这些未运行项伪装成测量结果。
+
+### 2026-10-25：修正诊断器的框排序误报
+
+云端首轮`20261025_001808`在26张图上停止，原输入完整性检查通过（25,695文件未改变）。本地用真实官方test COCO的10,517个框按原prepare的12位有效数字转换，再还原像素坐标，复现了完全相同的26个失败ID。逐框实际往返误差最大约1.92e-9像素；旧诊断器对两组框各自排序后逐行比较，相同x坐标受浮点尾差影响会交换排序，造成错误配对。
+
+修正仅影响新诊断模块：同类别bbox改用容差内的一一二部图匹配，仍保持原来的1e-5像素绝对容差，不复用同一参考框，不更改原标注或旧实验。新增排序、重复匹配、歧义候选、无效输入回归测试。新audit JSON记录`bbox_comparison.method`及容差。旧云端审计目录保留，更新Git代码后用新的timestamp目录重跑P0；真实云端标签仍需重审，不能把本地标注往返复现说成云端已通过，也不能将此诊断器误报解释为原mAP下降的原因。
+
+修正后实际运行42项单测通过（含本地合成smoke收据核验）；云端默认运行应为41项通过、1项收据检查跳过。本地10,517个真实COCO框的标注往返模拟中，修正后1111张全部匹配通过，原始JSON的SHA256前后不变。

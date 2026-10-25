@@ -62,6 +62,42 @@ def test_coco_id_class_gt_coordinate_alignment(tmp_path):
     assert not same_boxes(labels_xyxy(path,80,40),boxes[7])
 
 
+def test_bbox_roundtrip_tied_x_does_not_depend_on_sort_order():
+    expected = [(0,10.,5.,20.,15.), (0,10.,30.,40.,50.)]
+    actual = [(0,10.+1e-9,5.,20.,15.), (0,10.-1e-9,30.,40.,50.)]
+    assert not np.allclose(sorted(actual),sorted(expected),rtol=0,atol=1e-5)
+    assert same_boxes(sorted(actual),sorted(expected))
+    assert same_boxes(list(reversed(actual)),expected)
+    assert not same_boxes([(0,10.,5.,21.,15.),actual[1]],expected)
+    assert not same_boxes([(1,*actual[0][1:]),actual[1]],expected)
+
+
+def test_bbox_matching_requires_one_to_one_not_reused_nearest_box():
+    expected = [(0,10.,5.,20.,15.), (0,40.,30.,50.,45.)]
+    assert not same_boxes([expected[0],expected[0]],expected)
+    assert not same_boxes(expected[:1],expected)
+    assert same_boxes([],[])
+
+
+def test_bbox_matching_uses_augmenting_path_for_ambiguous_candidates():
+    tol = 1e-5
+    def shifted(amount):
+        return (0,10.+amount,5.+amount,20.+amount,15.+amount)
+    expected = [shifted(0),shifted(1.5*tol)]
+    actual = [shifted(.75*tol),shifted(-.5*tol)]
+    # The first actual box matches either reference; the second only the first.
+    assert same_boxes(actual,expected,tol)
+    assert same_boxes(list(reversed(actual)),list(reversed(expected)),tol)
+    assert not same_boxes(actual,expected,tol/10)
+
+
+def test_bbox_matching_rejects_nonfinite_or_invalid_shape():
+    valid = [(0,1.,2.,3.,4.)]
+    assert not same_boxes([(0,float('nan'),2.,3.,4.)],valid)
+    assert not same_boxes([(0,1.,2.,3.)],valid)
+    with pytest.raises(ValueError):same_boxes(valid,valid,-1)
+
+
 @pytest.mark.parametrize('field,value',[('image_id',91),('source_file','b.jpg'),('file','7/other.png'),
     ('file','../outside.png'),('file','/absolute.png'),('file','C:/outside.png'),('width',99),('height',49),('official_split','train')])
 def test_strict_file_id_dimensions_and_no_path_escape(field,value):

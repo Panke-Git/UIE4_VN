@@ -22,7 +22,9 @@ def audit(prepared, weights, enhanced, out, evaluation_root=None, data_root=None
     checks, records = [], []
     result = {"status": "unknown", "checks": checks, "images": records, "versions": versions(),
               "paths": {"prepared": str(prepared), "weights": str(weights), "enhanced": str(enhanced)},
-              "source_inventory": source_inventory(out), "synthetic": None}
+              "source_inventory": source_inventory(out), "synthetic": None,
+              "bbox_comparison": {"method": "same-class one-to-one bipartite matching; independent of row order",
+                                  "absolute_tolerance_pixels": 1e-5}}
     def check(name, state, detail, critical=True):
         checks.append({"check": name, "status": state, "detail": detail, "critical": critical})
     try:

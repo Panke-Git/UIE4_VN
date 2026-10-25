@@ -174,7 +174,52 @@ def expected_coco(doc, meta):
 
 
 def same_boxes(actual, expected, tolerance=1e-5):
-    return len(actual) == len(expected) and (not actual or bool(np.allclose(actual, expected, rtol=0, atol=tolerance)))
+    """Compare bbox multisets using exact classes and one-to-one coordinate matches.
+
+    Sorting floats independently is unsafe: YOLO round-trip error can reorder
+    boxes sharing the same x coordinate. Keep the original absolute tolerance,
+    and require a perfect bipartite matching rather than pairing sorted rows.
+    """
+    if not np.isfinite(tolerance) or tolerance < 0:
+        raise ValueError("BBox tolerance must be finite and nonnegative")
+    if len(actual) != len(expected):
+        return False
+    if not len(actual):
+        return True
+    a, e = np.asarray(actual, dtype=np.float64), np.asarray(expected, dtype=np.float64)
+    if a.shape != (len(actual), 5) or e.shape != a.shape or not np.isfinite(a).all() or not np.isfinite(e).all():
+        return False
+    compatible = (a[:, None, 0] == e[None, :, 0]) & np.all(
+        np.abs(a[:, None, 1:] - e[None, :, 1:]) <= tolerance, axis=2)
+    if not compatible.any(axis=1).all() or not compatible.any(axis=0).all():
+        return False
+    edges = [np.flatnonzero(row).tolist() for row in compatible]
+    left_match, right_match = [-1] * len(a), [-1] * len(e)
+    for start in range(len(a)):
+        # Iterative augmenting paths avoid a recursion limit on crowded images.
+        pending, seen_left, parent_right = [start], {start}, {}
+        terminal = -1
+        while pending and terminal == -1:
+            left = pending.pop()
+            for right in edges[left]:
+                if right in parent_right:
+                    continue
+                parent_right[right] = left
+                if right_match[right] == -1:
+                    terminal = right
+                    break
+                other = right_match[right]
+                if other not in seen_left:
+                    seen_left.add(other)
+                    pending.append(other)
+        if terminal == -1:
+            return False
+        while terminal != -1:
+            left = parent_right[terminal]
+            previous = left_match[left]
+            left_match[left], right_match[terminal] = terminal, left
+            terminal = previous
+    return True
 
 
 def preview_grid(images, titles, path, width=640, crop=None):
