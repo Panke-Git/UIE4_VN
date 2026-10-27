@@ -384,3 +384,48 @@ def test_p1_actual_synthetic_train_and_two_evaluations_receipt():
     assert a['identity']==b['identity']==p['identity'] and a['test_count']==b['test_count']==3
     assert summary['input_integrity']['status']=='pass'
     assert read_json(base/'original_inputs_after.json')['status']=='pass'
+
+
+def test_wsl_migration_accepts_only_platform_difference():
+    from src.downstream_duo.diagnostics.migration import platform_only_changes
+    original={'platform':'original Linux','python':'3.11.17','torch':'2.5.1+cu121','numpy':'1.26.4'}
+    target={**original,'platform':'WSL Linux'}
+    assert set(platform_only_changes(original,target))=={'platform'}
+    assert platform_only_changes(original,original)=={}
+    for field,value in [('python','3.11.18'),('torch','2.6.0'),('numpy','2.0.0')]:
+        with pytest.raises(ValueError):platform_only_changes(original,{**target,field:value})
+
+
+def test_wsl_detection_rejects_native_windows(monkeypatch):
+    from src.downstream_duo.diagnostics import migration
+    monkeypatch.setattr(migration.platform,'system',lambda:'Windows')
+    monkeypatch.setattr(migration.platform,'release',lambda:'microsoft')
+    assert not migration.is_wsl2()
+    monkeypatch.setattr(migration.platform,'system',lambda:'Linux')
+    assert migration.is_wsl2()
+
+
+def test_wsl_missing_or_modified_record_cannot_bypass_lock(tmp_path):
+    from src.downstream_duo.diagnostics.migration import verify_record
+    record=tmp_path/'migration_record.json';record.write_text('{}')
+    with pytest.raises((ValueError,FileNotFoundError)):verify_record(record,tmp_path,tmp_path/'best.pt')
+
+
+@pytest.mark.skipif(not os.getenv('DUO_MIGRATION_SMOKE_ROOT'),reason='Optional completed synthetic host-migration receipt')
+def test_actual_synthetic_migration_recheck_and_p1_plan_receipt():
+    from src.downstream_duo.evaluate import frozen_registry
+    from src.downstream_duo.utils import load_prepared
+    base=Path(os.environ['DUO_MIGRATION_SMOKE_ROOT'])
+    receipt=read_json(base/'integration_receipt.json')
+    record=read_json(receipt['record'])
+    replay=read_json(Path(receipt['record']).parent/'baseline_recheck.json')
+    p=read_json(Path(receipt['new_plan'])/'plan.json')
+    assert record['synthetic'] is True and replay['status']=='pass'
+    assert receipt['uie_probe']=='pass' and receipt['original_registry_preserved']
+    assert p['detector_versions']==record['target_detector_versions']
+    assert p['historical_detector_versions']==record['historical_detector_versions']
+    assert replay['target_metrics']['raw']['weights_sha256']==replay['target_metrics']['full']['weights_sha256']
+    assert receipt['original_inputs']['status']=='pass'
+    # The original strict entry still refuses a different platform: no global bypass.
+    with pytest.raises(ValueError,match='environment'):
+        frozen_registry(record['prepared'],record['raw_weights'],load_prepared(record['prepared'],verify=False))

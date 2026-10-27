@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 
-from ..utils import load_prepared, require_yolo, versions
+from ..utils import load_prepared, pair_identity, require_yolo, versions
 from ..evaluate import frozen_registry
 from .common import *
 
@@ -32,13 +32,17 @@ def build_dataset(prepared, images, rows, out, names):
     return yaml_path
 
 
-def frozen_evaluate(prepared, weights, images, rows, out, condition, baseline, gpu="0"):
+def frozen_evaluate(prepared, weights, images, rows, out, condition, baseline, gpu="0", migration_record=None):
     prepared, weights, out = Path(prepared).resolve(), Path(weights).resolve(), Path(out).resolve()
     meta = load_prepared(prepared,verify=False)
-    registry = frozen_registry(prepared,weights,meta)
+    if migration_record is None:
+        registry = frozen_registry(prepared,weights,meta)
+    else:
+        from .migration import verify_record
+        registry, _ = verify_record(migration_record, prepared, weights)
     if baseline.get("weights_sha256") != sha256(weights) or Path(baseline.get("weights","")).resolve() != weights:
         raise ValueError("Baseline and diagnostics must use the exact same best.pt path/SHA256")
-    if baseline.get("versions") != versions():
+    if baseline.get("versions") != (versions() if migration_record is None else registry["versions"]):
         raise ValueError("Evaluate diagnostics in original detector environment")
     params = dict(baseline["parameters"])
     if str(params.get("device")) != str(gpu):
@@ -49,7 +53,7 @@ def frozen_evaluate(prepared, weights, images, rows, out, condition, baseline, g
     runtime_dirs(out)
     dataset = build_dataset(prepared,images,rows,out/"dataset",meta["mapping"]["names"])
     by_path = {str((out/"dataset/images/test"/r["file"]).resolve()):r for r in rows}
-    predictions = {r["image_id"]:{"image_id":r["image_id"],"file":r["file"],"detections":[]} for r in rows}
+    predictions = {r["image_id"]:{"image_id":r["image_id"],"file":r["file"],"width":r["width"],"height":r["height"],"detections":[]} for r in rows}
     seen, effective = set(), {}
     YOLO = require_yolo()
     from ultralytics.models.yolo.detect import DetectionValidator
@@ -84,13 +88,16 @@ def frozen_evaluate(prepared, weights, images, rows, out, condition, baseline, g
         raise ValueError("Diagnostic coverage/weights changed")
     box = metric.box
     result = {"condition":condition,"synthetic":meta["synthetic"],"test_count":len(rows),
-        "image_ids":[r["image_id"] for r in rows],"weights":str(weights),"weights_sha256":sha256(weights),
+        "image_ids":[r["image_id"] for r in rows],"identity":pair_identity(meta),"weights":str(weights),"weights_sha256":sha256(weights),
         "parameters":params,"effective_validator_args":effective,"versions":versions(),
         "precision":float(box.mp),"recall":float(box.mr),"map50":float(box.map50),"map50_95":float(box.map),
         "scope":"whole official test" if len(rows)==len(meta["splits"]["test"]) else "diagnostic subset ONLY; not comparable to whole-test AP",
         "per_class":[{"class_id":int(cls),"name":meta["mapping"]["names"][int(cls)],"precision":float(box.p[i]),
                       "recall":float(box.r[i]),"map50":float(box.ap50[i]),"map50_95":float(box.ap[i])}
                      for i,cls in enumerate(box.ap_class_index)]}
-    write_json(out/f"metrics_{condition}.json",result)
     write_json(out/"per_image_predictions.json",list(predictions.values()))
+    result["predictions_sha256"] = sha256(out/"per_image_predictions.json")
+    if migration_record is not None:
+        result["migration_record_sha256"] = sha256(migration_record)
+    write_json(out/f"metrics_{condition}.json",result)
     return result

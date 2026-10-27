@@ -341,3 +341,151 @@ cat "$P1/input_integrity_after.json"
 新增P1后实际执行56项测试通过，包含P0与P1两份合成集成收据；AutoDL默认没有本地收据时为54项通过、2项跳过。合成P1在CPU执行6张train/2张val的固定V16增强、新YOLO 1 epoch训练、同best.pt对3张Raw/Enhanced test的两次评价及四组汇总。合成初始化为本地随机YAML配置，不是COCO预训练，因此明确标为software-only，不能解释真实P1效果；真实CLI拒绝synthetic数据且强制原COCO初始化SHA256。
 
 合成P1输入保护检查通过，额外核验336个原有合成测试文件无改变/新增文件；再次调用已完成训练未重训。真实DUO的6671张train/val增强与80 epoch P1尚未运行。只增加P1专用模块/脚本，并更新本README和诊断测试，未修改原Raw训练入口或模型代码。
+
+## 11. Win10 / RTX3060 12GB：使用WSL2迁移（2026-10-27）
+
+采用Windows宿主＋WSL2 Ubuntu 22.04＋Linux Conda。此路线保留原Linux绝对路径，不是原生PowerShell/Python运行方案。当前Windows、驱动和GPU未在本开发机实测；迁移工具有独立的合成CPU验证。用户已确认全部服务器文件有备份。
+
+### 11.1 从备份带哪些内容
+
+代码通过Git克隆完整UIE4_VN仓库，不只复制downstream模块。experiments和数据不在Git内，按原名字另行恢复：
+
+| 内容 | 要求 |
+|---|---|
+| `experiments/downstream_duo/prepared_duo/` | 整个目录：三组Raw PNG、labels、manifests、split_metadata.json/.sha256、dataset_snapshot.json、category_mapping.json、duo_raw.yaml、bbox_corrections.json、detector_training_lock.json。不能只复制标签。 |
+| `experiments/downstream_duo/yolo_raw_seed3520/` | 建议整个目录，必须有run/weights/best.pt、protocol.json、训练配置/原train-val YAML；保留run/args.yaml、results.csv和曲线。 |
+| 原COCO初始化`yolo11s.pt` | 实际位置以detector_training_lock.json中的initial_model为准，常见experiments/downstream_duo/pretrained/yolo11s.pt。必须是原initial_model_sha256对应文件。 |
+| `experiments/downstream_duo/enhanced_full_tiled/` | 整个目录，尤其1111张images/test_full、labels/test_full及enhancement_manifest.json。PNG不是论文overview图。 |
+| `experiments/downstream_duo/diagnostics/20261025_110654/` | 最小启动证据是audit/audit_protocol.json、identity/identity_control.json、runner_status.json、input_integrity_after.json。研究归档还应保留diagnosis_summary、full_vs_tiled的JSON/名单/子集指标及figures。 |
+| `experiments/downstream_duo/evaluation/` | 强烈建议完整保留原R→R/R→E指标、逐图预测及validator输出；不能用本地离线近似复算替换。 |
+| `experiments/v16_PlainUNet_ColorQuery_UICF_PreBackbone_seed3520_20260824_004528/` | 推理最少只需原字节的config_resolved.yaml和best/best_psnr.pt；可保留整个run作归档。 |
+| 已存在的`diagnostics/p1_.../` | 如果服务器上P1已生成数据/训练，完整备份该目录，包括日志、plan、manifest、新模型best/last、registry和锁。不要删除锁后自动重训；下面命令默认新建迁移后的P1，不恢复半途优化器状态。 |
+| 原始`publicdata/DUO/` | 保留annotations两个JSON、images/train和images/test、README。P1训练直接读prepared PNG，但原数据用于审计与恢复。 |
+
+不必搬Haze4K、其它v15/v16实验、LSUI训练图片、旧失败审计20261025_001808或本地software-smoke/venv。成功P0中的identity/evaluation私有图像副本和native/replay大图不是P1启动硬依赖；保留必要JSON和研究证据。不要改任何旧JSON/YAML里的路径或版本；尤其V16 config中的LSUI路径只是来源核对，不要求LSUI数据在新机存在，改它会破坏checkpoint/config哈希对应。
+
+### 11.2 Windows准备WSL2
+
+先安装支持WSL CUDA的Windows NVIDIA驱动；不在WSL中安装Linux NVIDIA显示驱动。管理员PowerShell：
+
+```powershell
+wsl --install -d Ubuntu-22.04
+wsl --update
+wsl -l -v
+```
+
+按提示重启，确认Ubuntu的VERSION为2。为沿用`/root/...`路径，之后进入root会话：
+
+```powershell
+wsl -d Ubuntu-22.04 -u root
+```
+
+以下命令均在Ubuntu内执行，而不是PowerShell。Linux训练文件放WSL自己的Linux文件系统；Windows D盘只作为备份中转。WSL虚拟磁盘可放D盘，但Linux路径仍按下文保持。准备足够的实际磁盘空间，覆盖备份PNG、新增6671张增强PNG和验证副本；训练期间保持Windows不休眠，不执行wsl --shutdown。
+
+```bash
+apt-get update
+apt-get install -y git wget tmux libgl1 libglib2.0-0
+nvidia-smi
+git config --global core.autocrlf false
+mkdir -p /root/autodl-tmp/pro/UIE4_workspace
+cd /root/autodl-tmp/pro/UIE4_workspace
+git clone https://github.com/Panke-Git/UIE4_VN.git UIE4_VN
+cd UIE4_VN
+```
+
+在WSL内完成Git账号认证。仓库已经存在时使用git pull，不重复clone。把备份experiments合并回该仓库的experiments，原数据恢复到`/root/autodl-tmp/pro/publicdata/DUO`。例如备份位于Windows的`D:\DUO_backup\experiments`，其WSL路径是`/mnt/d/DUO_backup/experiments`，可复制：
+
+```bash
+# 仅为备份中转位置示例，先确认与自己的备份位置一致。
+cp -a /mnt/d/DUO_backup/experiments/. /root/autodl-tmp/pro/UIE4_workspace/UIE4_VN/experiments/
+```
+
+不要让编辑器对备份JSON/YAML/TSV自动改换行或重新保存；程序将核对原字节SHA256。`git clone`不会自动带回任何checkpoint或数据。
+
+### 11.3 在WSL重建两个Linux环境
+
+若尚无Linux Conda，安装Miniforge到原prefix；Windows原生Conda不能替代WSL内的Linux环境，也不能把Linux环境目录当作Windows环境使用：
+
+```bash
+wget -O /tmp/Miniforge3-Linux-x86_64.sh https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+bash /tmp/Miniforge3-Linux-x86_64.sh -b -p /root/miniconda3
+source /root/miniconda3/etc/profile.d/conda.sh
+```
+
+已有该Linux prefix时只执行source，不覆盖安装。以下版本对应用户已提供的真实日志；以备份中detector_training_lock.json、enhancement_manifest.json的实际versions为最终依据。迁移只豁免platform字符串，Python补丁号和已登记包版本也必须相同。
+
+```bash
+conda create -n duo_yolo python=3.11.17 -y
+conda activate duo_yolo
+python -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
+python -m pip install -r configs/downstream_duo/requirements-detector.txt
+python -m pip check
+
+conda create -n pax python=3.12.13 -y
+conda activate pax
+python -m pip install torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cu126
+python -m pip install numpy==2.4.4 Pillow==12.2.0 PyYAML==6.0.3 scipy==1.18.1
+python -m pip check
+python -m src.downstream_duo.preflight --role uie
+```
+
+Pax不要安装Ultralytics。公开PyTorch索引已核查存在2.13.0+cu126及0.28.0+cu126的cp312 Linux x86_64 wheel；2.5.1/0.20.1 cu121也有官方安装配方。若某个精确版本不可取得，保留报错，不伪造元数据、不跳过版本检查。更换torch/numpy等会成为另一种环境迁移，需要另行验证。
+
+### 11.4 显式记录平台迁移并复验原检测器
+
+原代码完整比较platform，直接照搬旧P1命令会报环境不一致。新增工具只将WSL platform变化单独记录，保留所有原锁/JSON/权重。随后用同一Raw best.pt在新机对Raw/Enhanced test各评估一次；没有重新训练Raw检测器，也不重生成test增强图。
+
+```bash
+conda activate duo_yolo
+export PYTHONDONTWRITEBYTECODE=1
+MIG="experiments/downstream_duo/diagnostics/wsl_$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)"
+
+python -m src.downstream_duo.diagnostics.migration create \
+  --prepared experiments/downstream_duo/prepared_duo \
+  --raw-weights experiments/downstream_duo/yolo_raw_seed3520/run/weights/best.pt \
+  --enhanced-test experiments/downstream_duo/enhanced_full_tiled \
+  --p0-run experiments/downstream_duo/diagnostics/20261025_110654 \
+  --output "$MIG"
+
+python -m src.downstream_duo.diagnostics.migration recheck \
+  --record "$MIG/migration_record.json" --gpu 0
+
+cat "$MIG/migration_summary.md"
+```
+
+迁移后Raw/Full任一mAP与原值绝对差>0.005会停止；这是工程复验门槛，不是统计显著性或新的阈值调参。完整保留原主结果及WSL新基线，P1使用同一WSL环境重评的R基线比较E训练结果。迁移新结果不覆盖原evaluation。
+
+### 11.5 3060 12GB先检查显存，再计划P1
+
+12GB不能保证原3090 24GB上的tile1024/FP32与YOLO batch16都能直接运行。先在pax用固定的最大面积官方train图走原增强参数；该probe不输入GT、不更新权重、不选择test超参：
+
+```bash
+conda activate pax
+python -m src.downstream_duo.diagnostics.migration probe-uie \
+  --record "$MIG/migration_record.json" --device cuda:0
+cat "$MIG/uie_memory_probe/probe.json"
+```
+
+该probe只检查V16推理，不保证YOLO训练batch显存。若OOM，保留probe.json，不能直接把tile改为512或把全图缩小后继续复用原Enhanced test。可另行考虑保持参数的CPU推理，或将所有条件注册为新协议并重新配对验证。YOLO若batch16 OOM，也不能只把P1 batch改8后声称训练条件与原Raw基线完全一致；需要记录差异并决定是否增加同batch的Raw对照。不会自动修改batch、AMP、tile或分辨率。
+
+显存probe通过后，新建P1计划，并显式使用已通过复验的迁移记录：
+
+```bash
+conda activate duo_yolo
+P1="experiments/downstream_duo/diagnostics/p1_$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)"
+python -m src.downstream_duo.diagnostics.p1 plan \
+  --prepared experiments/downstream_duo/prepared_duo \
+  --raw-weights experiments/downstream_duo/yolo_raw_seed3520/run/weights/best.pt \
+  --enhanced-test experiments/downstream_duo/enhanced_full_tiled \
+  --p0-run experiments/downstream_duo/diagnostics/20261025_110654 \
+  --migration-record "$MIG/migration_record.json" \
+  --output "$P1"
+```
+
+随后按第8.2节显式`--start-training`后台启动。旧服务器已经创建或训练过的P1目录作为历史备份保留；不在新机直接重用旧plan/训练锁，因为旧计划绑定原路径、环境和源码。需要恢复半途训练时，应先核对旧registry、last.pt和日志，不能把重新从头训练冒充resume。
+
+参考：[Microsoft WSL安装](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)、[WSL文件系统](https://learn.microsoft.com/en-us/windows/wsl/filesystems)、[NVIDIA WSL指南](https://docs.nvidia.com/cuda/wsl-user-guide/index.html)、[PyTorch历史版本](https://pytorch.org/get-started/previous-versions/)、[cu126官方wheel索引](https://download.pytorch.org/whl/cu126/torch/)、[Miniforge](https://github.com/conda-forge/miniforge)。
+
+### 11.6 迁移工具验证状态
+
+2026-10-27实际运行60项自动测试通过（含三份可选本地集成收据；普通新机为57项通过、3项跳过）。在macOS CPU用明确标为synthetic的副本模拟平台字段变化，跑通迁移记录、同一旧检测器的Raw/Enhanced两次复验、原参数V16 train图probe和迁移P1计划。195个原有软件测试文件哈希无变化；旧registry未改写，未提供迁移记录时原严格入口仍拒绝平台差异。没有运行真实Windows/WSL、没有实测3060 CUDA显存、没有启动真实DUO P1训练。

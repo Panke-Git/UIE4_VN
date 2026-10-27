@@ -68,7 +68,7 @@ def source_hashes():
     return {str(p): sha256(p) for p in files if p.is_file()}
 
 
-def plan(prepared, raw_weights, enhanced_test, p0_run, output, initial_weights=None, uie_run_dir=None, *, _synthetic=False):
+def plan(prepared, raw_weights, enhanced_test, p0_run, output, initial_weights=None, uie_run_dir=None, migration_record=None, *, _synthetic=False):
     prepared, raw_weights, enhanced_test, p0_run = [Path(p).resolve() for p in (prepared, raw_weights, enhanced_test, p0_run)]
     from ..evaluate import frozen_registry
     from ..model_inference_v16 import validate_enhanced
@@ -76,7 +76,11 @@ def plan(prepared, raw_weights, enhanced_test, p0_run, output, initial_weights=N
     if bool(meta["synthetic"]) != _synthetic:
         raise ValueError("Real P1 refuses synthetic data; software tests use a private API")
     validate_partition(meta)
-    baseline = frozen_registry(prepared, raw_weights, meta)
+    if migration_record is None:
+        baseline = frozen_registry(prepared, raw_weights, meta)
+    else:
+        from .migration import verify_record
+        baseline, _ = verify_record(migration_record, prepared, raw_weights, require_recheck=True)
     for split in ("train", "val"):
         if sha256(prepared / "manifests" / f"{split}.tsv") != baseline.get(f"{split}_manifest_sha256"):
             raise ValueError("P1 must retain precisely the original detector train/val partition")
@@ -107,13 +111,16 @@ def plan(prepared, raw_weights, enhanced_test, p0_run, output, initial_weights=N
         raise ValueError("P1 freezes the existing tiled E domain; no new enhancement parameter search")
     out = fresh_output(output, [prepared, raw_weights, enhanced_test, p0_run, initial, uie])
     runtime_dirs(out)
-    baseline_metrics = {c: audit["existing_metrics"][c] for c in ("raw", "full")}
+    historical_metrics = {c: audit["existing_metrics"][c] for c in ("raw", "full")}
+    baseline_metrics = historical_metrics if migration_record is None else read_json(Path(migration_record).parent / "baseline_recheck.json")["target_metrics"]
     for c, metric in baseline_metrics.items():
         if metric["weights_sha256"] != baseline["weights_sha256"] or metric["identity"] != pair_identity(meta) or metric["parameters"] != baseline["evaluation"]:
             raise ValueError(f"Original {c} protocol mismatch")
     protected = [prepared, enhanced_test, Path(baseline["output"]), checkpoint, cfg, initial,
                  p0_run / "audit/audit_protocol.json", p0_run / "identity/identity_control.json",
                  p0_run / "runner_status.json", p0_run / "input_integrity_after.json"]
+    if migration_record is not None:
+        protected += [Path(migration_record), Path(migration_record).with_suffix(".sha256"), Path(migration_record).parent / "baseline_recheck.json"]
     print("P1 plan: hashing protected inputs; this may take several minutes", flush=True)
     atomic_json(out / "input_integrity_before.json", snapshot(protected))
     sources = source_hashes()
@@ -128,9 +135,11 @@ def plan(prepared, raw_weights, enhanced_test, p0_run, output, initial_weights=N
         "enhancement_manifest_sha256": sha256(enhanced_test / "enhancement_manifest.json"),
         "prepared_metadata_sha256": sha256(prepared / "split_metadata.json"), "identity": pair_identity(meta),
         "counts": meta["counts"], "train": baseline["train"], "evaluation": baseline["evaluation"],
-        "detector_versions": baseline["versions"], "uie_versions": existing["versions"],
+        "detector_versions": versions(), "historical_detector_versions": baseline["versions"], "uie_versions": existing["versions"],
         "tile_size": existing["tile_size"], "overlap": existing["overlap"],
-        "baseline_metrics": baseline_metrics, "source_hashes": sources,
+        "baseline_metrics": baseline_metrics, "historical_baseline_metrics": historical_metrics, "source_hashes": sources,
+        "migration_record": str(Path(migration_record).resolve()) if migration_record else None,
+        "migration_record_sha256": sha256(migration_record) if migration_record else None,
         "detector_python": sys.executable, "created_unix": time.time(),
         "protocol": "New E-trained detector from identical COCO initialization; E-val selects best.pt. Existing E-test reused read-only. Evaluate E->R and E->E on identical official test IDs.",
         "limits": "Single seed; P0 native OOM limits retained. Recovery supports domain mismatch, not proof of zero information loss. No recovery also requires checking training/optimization."}
@@ -147,6 +156,11 @@ def load_plan(run_dir, detector=False, verify_original=False):
     if not root.is_relative_to(DIAGNOSTICS.resolve()) or sha256(root / "plan.json") != (root / "plan.sha256").read_text().strip():
         raise ValueError("P1 plan missing, changed or outside diagnostics")
     p = read_json(root / "plan.json")
+    if p.get("migration_record"):
+        from .migration import verify_record
+        if sha256(p["migration_record"]) != p["migration_record_sha256"]:
+            raise ValueError("Migration evidence changed after plan")
+        verify_record(p["migration_record"], p["prepared"], p["raw_weights"], runtime_check=detector, require_recheck=True)
     for path, expected in p["source_hashes"].items():
         if sha256(path) != expected:
             raise ValueError(f"Executed source changed since plan: {path}; use a new reviewed plan")
@@ -417,6 +431,7 @@ def report(run_dir):
         "counts": p["counts"], "train": p["train"], "initial_weights_sha256": p["initial_weights_sha256"],
         "raw_weights_sha256": p["raw_weights_sha256"], "uie_checkpoint_sha256": p["uie_checkpoint_sha256"],
         "rows": rows, "input_integrity": guard, "interpretation_limits": p["limits"],
+        "migration_record": p.get("migration_record"), "historical_baseline_metrics": p.get("historical_baseline_metrics"),
         "phases": {"enhancement_logged_success": sum(r["status"] == "ok" for r in progress.values()),
                    "enhancement_expected": p["counts"]["train"] + p["counts"]["val"],
                    "training_status": training.get("status", "not_started")}}
@@ -432,6 +447,10 @@ def report(run_dir):
         lines.append("| " + " | ".join([row["condition"], *values]) + " |")
     lines += ["", f"Input integrity: {guard['status']}", "", p["protocol"], "", p["limits"], "",
               "No test-based epoch/threshold/enhancer selection. R-trained and E-trained detectors differ; this is not the original frozen-detector experiment."]
+    if p.get("migration_record"):
+        lines += ["", "R->R/R->E table rows use the explicitly replayed WSL baseline. Original host results are retained separately in JSON:"]
+        for c, metric in p["historical_baseline_metrics"].items():
+            lines.append(f"- Original {c}: {metric['map50']:.6f} / {metric['map50_95']:.6f}")
     (root / "p1_summary.md").write_text("\n".join(lines) + "\n")
     return summary
 
@@ -442,7 +461,7 @@ def main(argv=None):
     a = sub.add_parser("plan", help="Read-only input validation and locked plan; no inference/training")
     for name in ("prepared", "raw-weights", "enhanced-test", "p0-run", "output"):
         a.add_argument("--" + name, required=True)
-    a.add_argument("--initial-weights"); a.add_argument("--uie-run-dir")
+    a.add_argument("--initial-weights"); a.add_argument("--uie-run-dir"); a.add_argument("--migration-record")
     for phase in ("check", "enhance", "train", "evaluate", "report"):
         a = sub.add_parser(phase)
         a.add_argument("--run-dir", required=True)
@@ -451,7 +470,7 @@ def main(argv=None):
         if phase == "train": a.add_argument("--start-training", action="store_true")
     args = parser.parse_args(argv)
     if args.phase == "plan":
-        print(plan(args.prepared, args.raw_weights, args.enhanced_test, args.p0_run, args.output, args.initial_weights, args.uie_run_dir))
+        print(plan(args.prepared, args.raw_weights, args.enhanced_test, args.p0_run, args.output, args.initial_weights, args.uie_run_dir, args.migration_record))
     elif args.phase == "check":
         root, p, meta = load_plan(args.run_dir, detector=True, verify_original=True)
         print({"status": "pass", "counts": p["counts"], "train": p["train"], "initial_weights": p["initial_weights"]})
