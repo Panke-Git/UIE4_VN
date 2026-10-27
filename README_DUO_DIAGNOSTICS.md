@@ -1,6 +1,6 @@
 # DUO / ICAR-UIE P0 下降诊断：原实验只读
 
-本模块调查固定 Raw-domain YOLO11s 下的检测下降，先排除工程/I/O/标注/评测协议问题，再测独立分块推理与 full-native 的差异。**不训练、不微调、不改阈值、不改原数据或旧实验。** P1 不会自动执行。
+P0入口调查固定 Raw-domain YOLO11s 下的检测下降，先排除工程/I/O/标注/评测协议问题，再测独立分块推理与 full-native 的差异。**P0不训练、不微调、不改阈值、不改原数据或旧实验。** 可选P1有独立的显式启动入口（第8节），不会被P0自动执行。
 
 ## 已给定真实结果：始终保留
 
@@ -218,9 +218,109 @@ cat "$RUN/full_vs_tiled/subset_metrics.json"
 tail -n 30 "$RUN/full_vs_tiled_inference.log"
 ```
 
-## 8. P1 只作后续设计，本次不执行
+## 8. 可选P1：显式启动增强域匹配训练
 
-只有P0报告支持进一步研究且用户明确同意，才考虑R→R（既有）、R→E（既有负面）和E→E。E→E需使用同一LSUI增强器处理train、独立val和test，新detector从相同COCO预训练初始化，固定配置/轮数/seed，在增强val选权重。不可根据test结果搜索增强参数。**本次没有实现或调用P1训练入口，也不提供冒充已实现的CLI。**
+P1回答：检测下降是否与YOLO只在Raw域训练、不能适应增强域有关。固定LSUI V16，不训练增强器；沿用已经冻结的增强checkpoint、tile/overlap、FP32和原尺寸规则，只新生成官方train内原有6004/667划分的增强图。已有1111张`enhanced_full_tiled`测试图直接复用，不重新生成或选参数。
+
+新YOLO从**与Raw基线完全相同SHA256的COCO预训练文件**初始化，使用原登记训练参数（80 epochs、imgsz640、seed3520、原batch/optimizer/增强默认项等），在增强val上选best.pt，然后冻结同一个新best.pt评价Raw test与Enhanced test。保留原有R→R、R→E负面结果，得到：
+
+| 检测器训练域 | Raw test | Enhanced test |
+|---|---|---|
+| Raw | 原R→R，保留 | 原R→E，保留 |
+| Enhanced | 新E→R | 新E→E |
+
+E→E恢复支持域失配是重要因素，但不能证明没有任何信息损失。E→E仍低也不能直接证明增强损坏信息，还需检查训练/优化。一组seed不提供统计显著性结论。P1改变了检测器训练域，论文应与原“冻结Raw检测器”协议分开解释。
+
+新增实现：`src/downstream_duo/diagnostics/p1.py`、`scripts/downstream_duo/diagnostics/run_p1.sh`。**本地仅执行了合成软件测试，真实DUO P1未启动。** 真实启动要求用户在AutoDL命令中显式加入`--start-training`；P0脚本不会调用P1。不会重写原`prepared_duo/detector_training_lock.json`。
+
+### 8.1 Git同步与生成计划（不推理、不训练）
+
+P1源码目录仍被原`.gitignore`忽略，首次同步需明确加入新增文件：
+
+```bash
+git add -f -- src/downstream_duo/diagnostics/p1.py scripts/downstream_duo/diagnostics/run_p1.sh
+git add -- README_DUO_DIAGNOSTICS.md tests/test_duo_diagnostics.py
+git diff --cached --stat
+# 确认后按现有分支流程commit/push；AutoDL执行以下命令。
+```
+
+```bash
+cd /root/autodl-tmp/pro/UIE4_workspace/UIE4_VN
+git pull
+conda activate duo_yolo
+export PYTHONDONTWRITEBYTECODE=1
+
+df -h .
+P1="experiments/downstream_duo/diagnostics/p1_$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)"
+
+python -m src.downstream_duo.diagnostics.p1 plan \
+  --prepared experiments/downstream_duo/prepared_duo \
+  --raw-weights experiments/downstream_duo/yolo_raw_seed3520/run/weights/best.pt \
+  --enhanced-test experiments/downstream_duo/enhanced_full_tiled \
+  --p0-run experiments/downstream_duo/diagnostics/20261025_110654 \
+  --uie-run-dir /root/autodl-tmp/pro/UIE4_workspace/UIE4_VN/experiments/v16_PlainUNet_ColorQuery_UICF_PreBackbone_seed3520_20260824_004528 \
+  --output "$P1"
+
+cat "$P1/training_config_snapshot.yaml"
+cat "$P1/p1_summary.md"
+```
+
+不要预先创建`$P1`。计划会核对已完成P0的协议/Identity/完整性、原train/val清单SHA256、真实Raw best.pt、原COCO初始化文件、LSUI checkpoint、版本、测试增强和固定参数，并保存原输入树哈希。这一步可能耗时，但不加载模型做推理或训练。若原COCO初始化文件已移动，添加`--initial-weights <实际文件路径>`；仍必须与Raw登记的初始文件SHA256一致，不自动下载替代文件。
+
+无需创建新环境，也不升级torch/numpy。检测训练/评估使用原`duo_yolo`；增强使用原`pax`。原始DUO/LSUI训练图不需要重新上传；P1读取prepared Raw PNG和已有LSUI权重。需要额外空间保存6671张原尺寸增强train/val PNG、检测训练产物及两组私有test评估副本；不自动缩图节省空间。
+
+### 8.2 用户显式启动P1（会新增一次YOLO训练）
+
+在生成计划的同一终端执行；这一命令明确进入P1，不需要再次运行Raw训练或P0。
+
+```bash
+nohup bash scripts/downstream_duo/diagnostics/run_p1.sh \
+  "$P1" \
+  --uie-python /root/miniconda3/envs/pax/bin/python \
+  --gpu 0 \
+  --start-training \
+  >> "$P1/launch.log" 2>&1 &
+
+echo "P1 PID=$!"
+echo "P1目录=$P1"
+tail -f "$P1/launch.log"
+```
+
+`nohup`后台运行，退出`tail -f`或关闭该终端不终止已启动的后台任务。中途不要更新Git源码或修改计划；运行各阶段会核对源码/计划哈希。脚本依次检查→原pax增强train/val→原duo_yolo训练新检测器→同新权重评估E→R/E→E→生成报告。V16始终eval/frozen/inference_mode，不用test选epoch、阈值或增强参数。
+
+完成训练的同一个P1目录再次调用不会重新训练；若训练已启动却没有成功完成，持久训练锁会拒绝自动重训/resume，先检查错误。增强阶段可复用已逐图记录且哈希正确的成功输出；残留active锁或未登记文件会要求人工核对，不自动覆盖未知产物。测试图与原标签都保持只读；新训练锁、缓存和日志只在P1目录。
+
+### 8.3 找回终端与查看结果
+
+```bash
+cd /root/autodl-tmp/pro/UIE4_workspace/UIE4_VN
+P1=$(ls -d experiments/downstream_duo/diagnostics/p1_20??????_??????/ | sort | tail -n 1)
+echo "$P1"
+tail -n 60 "$P1/launch.log"
+cat "$P1/p1_summary.md"
+cat "$P1/input_integrity_after.json"
+```
+
+最终输出：
+
+```text
+<P1>/plan.json + plan.sha256
+<P1>/training_config_snapshot.yaml
+<P1>/launch.log
+<P1>/enhanced/{images,labels}/{train_enhanced,val_enhanced}/
+<P1>/enhanced/enhancement_progress.jsonl
+<P1>/enhanced/enhancement_manifest.json
+<P1>/detector/registry.json
+<P1>/detector/run/weights/best.pt
+<P1>/detector/run/results.csv
+<P1>/evaluation/raw/metrics_raw.json       # E→R
+<P1>/evaluation/full/metrics_full.json     # E→E
+<P1>/evaluation/{raw,full}/per_image_predictions.json
+<P1>/p1_summary.{json,md}
+<P1>/input_integrity_{before,after}.json
+```
+
+`p1_summary.md`计划阶段就存在，新结果未运行时标为not evaluated；最终`p1_summary.json`的status=complete且输入完整性pass才表示整个P1完成。细分阶段可以手动调用`python -m src.downstream_duo.diagnostics.p1 <check|enhance|train|evaluate|report> --help`查看真实参数，训练子命令同样要求`--start-training`。
 
 ## 9. 本次开发验证状态
 
@@ -235,3 +335,9 @@ tail -n 30 "$RUN/full_vs_tiled_inference.log"
 修正仅影响新诊断模块：同类别bbox改用容差内的一一二部图匹配，仍保持原来的1e-5像素绝对容差，不复用同一参考框，不更改原标注或旧实验。新增排序、重复匹配、歧义候选、无效输入回归测试。新audit JSON记录`bbox_comparison.method`及容差。旧云端审计目录保留，更新Git代码后用新的timestamp目录重跑P0；真实云端标签仍需重审，不能把本地标注往返复现说成云端已通过，也不能将此诊断器误报解释为原mAP下降的原因。
 
 修正后实际运行42项单测通过（含本地合成smoke收据核验）；云端默认运行应为41项通过、1项收据检查跳过。本地10,517个真实COCO框的标注往返模拟中，修正后1111张全部匹配通过，原始JSON的SHA256前后不变。
+
+### 2026-10-26：P1软件验证
+
+新增P1后实际执行56项测试通过，包含P0与P1两份合成集成收据；AutoDL默认没有本地收据时为54项通过、2项跳过。合成P1在CPU执行6张train/2张val的固定V16增强、新YOLO 1 epoch训练、同best.pt对3张Raw/Enhanced test的两次评价及四组汇总。合成初始化为本地随机YAML配置，不是COCO预训练，因此明确标为software-only，不能解释真实P1效果；真实CLI拒绝synthetic数据且强制原COCO初始化SHA256。
+
+合成P1输入保护检查通过，额外核验336个原有合成测试文件无改变/新增文件；再次调用已完成训练未重训。真实DUO的6671张train/val增强与80 epoch P1尚未运行。只增加P1专用模块/脚本，并更新本README和诊断测试，未修改原Raw训练入口或模型代码。

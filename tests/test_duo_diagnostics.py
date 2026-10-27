@@ -117,10 +117,14 @@ def test_distinct_annotation_ids_with_duplicate_boxes_rejected():
 def test_new_diagnostics_contain_no_training_calls():
     import ast
     for path in Path(common.__file__).parent.glob('*.py'):
+        if path.name == 'p1.py':
+            continue  # Explicitly gated optional matched-domain training, outside P0.
         tree=ast.parse(path.read_text())
         forbidden=[node.func.attr for node in ast.walk(tree) if isinstance(node,ast.Call)
                    and isinstance(node.func,ast.Attribute) and node.func.attr in ('train','backward','step')]
         assert not forbidden, (path,forbidden)
+    runner=(Path(common.__file__).parent/'run_p0.py').read_text()
+    assert 'from .p1' not in runner and 'diagnostics.p1' not in runner
 
 
 @pytest.mark.parametrize('kind',['duplicate_image','duplicate_annotation','unknown_image','unknown_class','wrong_mapping','nan','nonpositive'])
@@ -291,3 +295,92 @@ def test_actual_no_training_software_smoke_receipt():
     assert compare['complete'] and compare['native_success_ids']==compare['sample_ids']
     assert set(read_json(root/'full_vs_tiled/subset_metrics.json')['sets']['native_common']['metrics'])=={'raw','tiled','native'}
     assert summary['input_integrity']['status']=='pass' and summary['p1_executed'] is False
+
+
+def test_p1_split_membership_allows_numeric_test_id_reuse():
+    from src.downstream_duo.diagnostics.p1 import validate_partition
+    meta={'seed':3520,'splits':{
+        'train':[{'image_id':1,'file':'1/a.png','official_split':'train'}],
+        'val':[{'image_id':2,'file':'2/b.png','official_split':'train'}],
+        'test':[{'image_id':1,'file':'1/c.png','official_split':'test'}]}}
+    validate_partition(meta)
+    wrong=deepcopy(meta);wrong['splits']['val'][0]['official_split']='test'
+    with pytest.raises(ValueError):validate_partition(wrong)
+    wrong=deepcopy(meta);wrong['splits']['val'][0]['image_id']=1
+    with pytest.raises(ValueError):validate_partition(wrong)
+
+
+@pytest.mark.parametrize('key,value',[('amp',True),('resume',True),('cache',True),('epochs',81),('seed',1),('imgsz',256),('data','test.yaml')])
+def test_p1_training_configuration_is_locked(key,value):
+    from src.downstream_duo.diagnostics.p1 import validate_training_config
+    config={'amp':False,'resume':False,'cache':False,'epochs':80,'seed':3520,'imgsz':640}
+    validate_training_config(config)
+    with pytest.raises(ValueError):validate_training_config({**config,key:value})
+
+
+def test_p1_initial_weights_must_match_original_hash(tmp_path):
+    from src.downstream_duo.diagnostics.p1 import validate_initial_weights
+    file=tmp_path/'initial.pt';file.write_bytes(b'software fixture only')
+    validate_initial_weights(file,sha256(file))
+    with pytest.raises(ValueError):validate_initial_weights(file,'0'*64)
+    with pytest.raises(ValueError):validate_initial_weights(file,None)
+    yaml=tmp_path/'initial.yaml';yaml.write_text('test: only')
+    with pytest.raises(ValueError):validate_initial_weights(yaml,sha256(yaml))
+
+
+def test_p1_training_needs_explicit_opt_in_and_one_attempt(tmp_path):
+    from src.downstream_duo.diagnostics.p1 import authorize_training
+    with pytest.raises(ValueError):authorize_training(tmp_path,False)
+    assert not (tmp_path/'detector_training_attempt.lock').exists()
+    authorize_training(tmp_path,True)
+    with pytest.raises(FileExistsError):authorize_training(tmp_path,True)
+
+
+def test_p1_locks_helper_source_files_too():
+    from src.downstream_duo.diagnostics.p1 import source_hashes
+    sources=source_hashes()
+    assert str(Path(common.__file__).resolve()) in sources
+    assert str((Path(common.__file__).parent/'evaluator.py').resolve()) in sources
+
+
+def test_p1_enhanced_data_geometry_and_label_hash_guard(tmp_path):
+    from src.downstream_duo.diagnostics.p1 import verify_enhanced_train
+    meta={'splits':{}}
+    records=[]
+    for split,iid in [('train',1),('val',2)]:
+        image=tmp_path/f'enhanced/images/{split}_enhanced/{iid}/a.png'
+        label=tmp_path/f'enhanced/labels/{split}_enhanced/{iid}/a.txt'
+        image.parent.mkdir(parents=True);label.parent.mkdir(parents=True)
+        Image.new('RGB',(7,5),(10,20,30)).save(image);label.write_text('')
+        row={'image_id':iid,'file':f'{iid}/a.png','width':7,'height':5,'label_sha256':sha256(label)}
+        meta['splits'][split]=[row]
+        records.append({'split':split,'image_id':iid,'file':row['file'],'status':'ok','sha256':sha256(image)})
+    manifest={'complete':True,'records':records,'checkpoint_sha256':'fixed','tile_size':32,'overlap':8}
+    write_json(tmp_path/'enhanced/enhancement_manifest.json',manifest)
+    config={'uie_checkpoint_sha256':'fixed','tile_size':32,'overlap':8}
+    verify_enhanced_train(tmp_path,config,meta)
+    label.write_text('0 .5 .5 .2 .2\n')
+    with pytest.raises(ValueError):verify_enhanced_train(tmp_path,config,meta)
+
+
+def test_p1_shell_does_not_start_without_confirmation():
+    import subprocess
+    script=Path(common.PROJECT)/'scripts/downstream_duo/diagnostics/run_p1.sh'
+    result=subprocess.run(['bash',str(script),'not-a-run','--uie-python','missing-python'],capture_output=True,text=True)
+    assert result.returncode==2 and 'nothing started' in result.stderr
+
+
+@pytest.mark.skipif(not os.getenv('DUO_P1_SMOKE_ROOT'),reason='Optional completed P1 synthetic integration receipt')
+def test_p1_actual_synthetic_train_and_two_evaluations_receipt():
+    base=Path(os.environ['DUO_P1_SMOKE_ROOT'])
+    root=base/'synthetic_p1'
+    p=read_json(root/'plan.json');summary=read_json(root/'p1_summary.json')
+    registry=read_json(root/'detector/registry.json')
+    assert p['synthetic'] is True and summary['synthetic'] is True and summary['status']=='complete'
+    assert registry['status']=='complete' and registry['train']['epochs']==1
+    assert registry['initial_weights_sha256']==p['initial_weights_sha256']
+    a=read_json(root/'evaluation/raw/metrics_raw.json');b=read_json(root/'evaluation/full/metrics_full.json')
+    assert a['weights_sha256']==b['weights_sha256']==sha256(registry['weights'])
+    assert a['identity']==b['identity']==p['identity'] and a['test_count']==b['test_count']==3
+    assert summary['input_integrity']['status']=='pass'
+    assert read_json(base/'original_inputs_after.json')['status']=='pass'
