@@ -10,6 +10,7 @@ import argparse
 from pathlib import Path
 import platform
 import time
+import traceback
 
 from ..utils import load_prepared, pair_identity, read_json, sha256, versions, write_json
 from .common import fresh_output, runtime_dirs, snapshot, check_snapshot, METRICS
@@ -162,7 +163,7 @@ def recheck(record_path, gpu="0"):
     return summary
 
 
-def probe_uie(record_path, device="cuda:0"):
+def probe_uie(record_path, device="cuda:0", *, output=None):
     """Fixed largest original-train image, same enhancer settings; no labels/test tuning."""
     record_path = Path(record_path).resolve()
     record = read_json(record_path)
@@ -176,31 +177,77 @@ def probe_uie(record_path, device="cuda:0"):
             raise ValueError(f"Restore original pax package first: {key}")
     meta = load_prepared(record["prepared"], verify=False)
     row = sorted(meta["splits"]["train"], key=lambda r: (-(r["width"]*r["height"]), r["image_id"]))[0]
-    out = fresh_output(record_path.parent / "uie_memory_probe", [Path(record["prepared"]), Path(record["enhanced_test"])])
-    cuda = str(device).startswith("cuda")
+    protected = [Path(record["prepared"]), Path(record["enhanced_test"]), record_path,
+                 record_path.with_suffix(".sha256"), record_path.parent / "baseline",
+                 *map(Path, record["asset_hashes"])]
+    if record.get("p0_run"):
+        protected.append(Path(record["p0_run"]))
+    out = fresh_output(output if output is not None else record_path.parent / "uie_memory_probe", protected)
+    cuda_index = None
     status = {"status": "not_run", "split": "official train only", "image_id": row["image_id"],
               "width": row["width"], "height": row["height"], "device": device,
               "tile_size": full["tile_size"], "overlap": full["overlap"], "dtype": "float32", "amp": False,
+              "output": str(out), "migration_record_sha256": sha256(record_path),
+              "probe_source_sha256": sha256(Path(__file__)), "versions": versions(),
+              "inference_started": False, "inference_completed": False,
+              "peak_allocated_bytes": None, "peak_reserved_bytes": None,
+              "memory_scope": "CUDA allocator peaks reset after explicit CUDA initialization and before model loading; includes model and inference, excludes driver/context and other processes",
               "note": "One memory probe, no model optimization or test-based parameter selection. Does not certify YOLO training batch memory."}
+    def stage(name):
+        status["stage"] = name
+        print(f"V16 memory probe: {name} ({out})", flush=True)
     try:
-        if cuda and not torch.cuda.is_available(): raise RuntimeError("CUDA unavailable")
-        if cuda: torch.cuda.reset_peak_memory_stats(device)
-        model, provenance = load_v16(full["provenance"]["run_dir"], device=device)
+        stage("parse_device")
+        target = torch.device(device)
+        if target.type == "cuda":
+            stage("initialize_cuda")
+            if not torch.cuda.is_available(): raise RuntimeError("CUDA unavailable")
+            status["cuda_initialized_before_probe"] = torch.cuda.is_initialized()
+            # is_available() does not initialize the allocator. reset_peak_memory_stats()
+            # also does not initialize it and can reject even a valid device 0.
+            torch.cuda.init()
+            cuda_index = target.index if target.index is not None else torch.cuda.current_device()
+            torch.cuda.set_device(cuda_index)
+            target = torch.device("cuda", cuda_index)
+            status.update(device=str(target), cuda_device_index=cuda_index)
+            torch.cuda.synchronize(cuda_index)
+            stage("reset_peak_statistics")
+            torch.cuda.reset_peak_memory_stats(cuda_index)
+        elif target.type != "cpu":
+            raise ValueError("WSL memory probe supports explicit CUDA or CPU only")
+        stage("load_v16")
+        model, provenance = load_v16(full["provenance"]["run_dir"], device=str(target))
         if provenance["checkpoint_sha256"] != full["provenance"]["checkpoint_sha256"]:
             raise ValueError("Probe checkpoint differs")
+        stage("verify_train_source")
         source = Path(record["prepared"]) / "images/train_raw" / row["file"]
         if sha256(source) != row["image_sha256"]: raise ValueError("Train probe source changed")
-        output = enhance_tensor(model, rgb_tensor(rgb(source)), device, full["tile_size"], full["overlap"])
-        save_tensor(output, out / "probe.png")
+        stage("inference")
+        status["inference_started"] = True
+        prediction = enhance_tensor(model, rgb_tensor(rgb(source)), str(target), full["tile_size"], full["overlap"])
+        if cuda_index is not None:
+            torch.cuda.synchronize(cuda_index)
+        status["inference_completed"] = True
+        stage("save_output")
+        save_tensor(prediction, out / "probe.png")
+        status["output_sha256"] = sha256(out / "probe.png")
         status["status"] = "pass"
-    except torch.OutOfMemoryError as error:
-        status.update(status="oom", error=str(error))
+        stage("complete")
     except Exception as error:
-        status.update(status="error", error=repr(error))
+        status.update(status="oom" if isinstance(error, torch.OutOfMemoryError) else "error",
+                      failed_stage=status["stage"], error=repr(error),
+                      error_type=type(error).__name__, traceback=traceback.format_exc())
+        traceback.print_exc()
     finally:
-        if cuda and torch.cuda.is_available():
-            status.update(gpu_name=torch.cuda.get_device_name(device), peak_allocated_bytes=torch.cuda.max_memory_allocated(device),
-                          peak_reserved_bytes=torch.cuda.max_memory_reserved(device))
+        # Reporting must not lazily initialize CUDA after a failure or hide its traceback.
+        if cuda_index is not None and torch.cuda.is_initialized():
+            for key, query in (("gpu_name", torch.cuda.get_device_name),
+                               ("peak_allocated_bytes", torch.cuda.max_memory_allocated),
+                               ("peak_reserved_bytes", torch.cuda.max_memory_reserved)):
+                try:
+                    status[key] = query(cuda_index)
+                except Exception as error:
+                    status.setdefault("memory_reporting_errors", {})[key] = repr(error)
         write_json(out / "probe.json", status)
     return status
 
@@ -215,6 +262,7 @@ def main(argv=None):
     p.add_argument("--record", required=True); p.add_argument("--gpu", default="0")
     p = sub.add_parser("probe-uie")
     p.add_argument("--record", required=True); p.add_argument("--device", default="cuda:0")
+    p.add_argument("--output", help="New directory below diagnostics; default: <record-dir>/uie_memory_probe. Existing outputs are never overwritten.")
     args = parser.parse_args(argv)
     if args.phase == "create":
         print(create(args.prepared, args.raw_weights, args.enhanced_test, args.p0_run, args.output))
@@ -223,7 +271,7 @@ def main(argv=None):
         print(outcome["status"])
         if outcome["status"] != "pass": raise SystemExit(2)
     else:
-        outcome = probe_uie(args.record, args.device)
+        outcome = probe_uie(args.record, args.device, output=args.output)
         print(outcome)
         if outcome["status"] != "pass": raise SystemExit(2)
 

@@ -466,6 +466,19 @@ python -m src.downstream_duo.diagnostics.migration probe-uie \
 cat "$MIG/uie_memory_probe/probe.json"
 ```
 
+2026-10-28修正了probe的CUDA冷启动顺序：`is_available()`不初始化CUDA分配器，而原probe在模型加载前直接调用`reset_peak_memory_stats()`，可能报`RuntimeError('Invalid device argument ')`。现先显式`torch.cuda.init()`、选择同一设备并同步，再清零峰值统计；模型、FP32、tile、overlap和图像选择规则保持原样。峰值覆盖模型加载与推理，不包含驱动/context及其他进程显存。该错误属于诊断工具错误，不能据此判断12GB显存是否足够；参考[PyTorch峰值统计实现](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/cuda/memory.py#L347-L362)和[CUDA初始化实现](https://github.com/pytorch/pytorch/blob/v2.13.0/torch/cuda/__init__.py#L451-L461)。
+
+已有失败报告时，保留原`uie_memory_probe/`，同步修复代码后显式指定新目录复测，不需要重新创建迁移记录或重跑已通过的Raw/Full复验：
+
+```bash
+PROBE="$MIG/uie_memory_probe_retry_$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)"
+python -m src.downstream_duo.diagnostics.migration probe-uie \
+  --record "$MIG/migration_record.json" --device cuda:0 --output "$PROBE"
+cat "$PROBE/probe.json"
+```
+
+`--output`必须是diagnostics内的新目录；已有输出绝不覆盖。新报告记录失败阶段、完整traceback、是否进入/完成推理、当前包版本和probe源码SHA256。无法取得的显存统计记为`null`，统计读取错误单独记录，不掩盖原异常。冷启动模拟单测只验证软件顺序，不代表真实CUDA/3060容量验证。
+
 该probe只检查V16推理，不保证YOLO训练batch显存。若OOM，保留probe.json，不能直接把tile改为512或把全图缩小后继续复用原Enhanced test。可另行考虑保持参数的CPU推理，或将所有条件注册为新协议并重新配对验证。YOLO若batch16 OOM，也不能只把P1 batch改8后声称训练条件与原Raw基线完全一致；需要记录差异并决定是否增加同batch的Raw对照。不会自动修改batch、AMP、tile或分辨率。
 
 显存probe通过后，新建P1计划，并显式使用已通过复验的迁移记录：
@@ -489,3 +502,5 @@ python -m src.downstream_duo.diagnostics.p1 plan \
 ### 11.6 迁移工具验证状态
 
 2026-10-27实际运行60项自动测试通过（含三份可选本地集成收据；普通新机为57项通过、3项跳过）。在macOS CPU用明确标为synthetic的副本模拟平台字段变化，跑通迁移记录、同一旧检测器的Raw/Enhanced两次复验、原参数V16 train图probe和迁移P1计划。195个原有软件测试文件哈希无变化；旧registry未改写，未提供迁移记录时原严格入口仍拒绝平台差异。没有运行真实Windows/WSL、没有实测3060 CUDA显存、没有启动真实DUO P1训练。
+
+2026-10-28修复probe冷启动后，实际运行65项测试通过、3项可选收据测试跳过。新增测试模拟未初始化的CUDA分配器，覆盖初始化顺序、CPU路径、OOM与普通错误的区分、阶段/traceback、统计读取错误、旧报告保留、新目录重试和CLI。另用已有明确标为synthetic的V16 checkpoint完成一次真实CPU模型推理，119个受保护测试文件哈希无变化。验证产物位于`experiments/downstream_duo/diagnostics/probe_fix_validation_20261028_e3KiQm/`；这些软件检查不代表真实WSL/CUDA显存容量测试。

@@ -411,6 +411,147 @@ def test_wsl_missing_or_modified_record_cannot_bypass_lock(tmp_path):
     with pytest.raises((ValueError,FileNotFoundError)):verify_record(record,tmp_path,tmp_path/'best.pt')
 
 
+@pytest.fixture
+def cold_cuda_probe(tmp_path, monkeypatch):
+    """Software-only cold allocator: resetting before initialization raises the real symptom."""
+    from types import SimpleNamespace
+    from src.downstream_duo.diagnostics import migration
+    from src.downstream_duo import model_inference_v16 as inference
+    prepared, enhanced = tmp_path/'prepared', tmp_path/'enhanced'
+    diagnostic = tmp_path/'diagnostics'
+    record = diagnostic/'migration/migration_record.json'
+    source = prepared/'images/train_raw/3/source.png'
+    source.parent.mkdir(parents=True)
+    pixels = np.arange(18*32*3, dtype=np.uint16).reshape(18,32,3).astype(np.uint8)
+    Image.fromarray(pixels).save(source)
+    row = {'image_id':3,'file':'3/source.png','width':32,'height':18,'image_sha256':sha256(source)}
+    smaller = {**row,'image_id':91,'width':4,'height':4,'file':'not_selected.png'}
+    meta = {'splits':{'train':[smaller,row], 'test':[{**row,'image_id':7,'width':3840,'height':2160}]}}
+    write_json(record, {'prepared':str(prepared),'raw_weights':str(tmp_path/'raw.pt'),
+                        'enhanced_test':str(enhanced),'asset_hashes':{}})
+    write_json(enhanced/'enhancement_manifest.json', {
+        'provenance':{'run_dir':str(tmp_path/'uie'),'checkpoint_sha256':'trusted-checkpoint'},
+        'tile_size':1024,'overlap':128,'versions':migration.versions()})
+    # This unit isolates the probe lifecycle. Real record checks are exercised separately.
+    monkeypatch.setattr(migration,'verify_record',lambda *a,**k: ({},{}))
+    monkeypatch.setattr(migration,'load_prepared',lambda *a,**k: meta)
+    monkeypatch.setattr(common,'DIAGNOSTICS',diagnostic)
+    state = {'initialized':False,'selected':None,'reset':False}
+    def init():
+        state['initialized'] = True
+    def index_ok(index):
+        if not state['initialized']:
+            raise RuntimeError('Invalid device argument ')
+        assert type(index) is int and index == 0
+    def select(index):
+        index_ok(index)
+        state['selected'] = index
+    def reset(index):
+        index_ok(index)
+        assert state['selected'] == index
+        state['reset'] = True
+    def query(value):
+        def read(index):
+            index_ok(index)
+            return value
+        return read
+    for name, value in {
+        'is_available':lambda:True, 'is_initialized':lambda:state['initialized'],
+        'init':init, 'current_device':lambda:0, 'set_device':select,
+        'synchronize':index_ok, 'reset_peak_memory_stats':reset,
+        'get_device_name':query('FAKE CUDA; software test only'),
+        'max_memory_allocated':query(1024), 'max_memory_reserved':query(2048),
+    }.items():
+        monkeypatch.setattr(torch.cuda,name,value)
+    def load(run_dir, device):
+        if device.startswith('cuda'):
+            assert state['initialized'] and state['reset']
+        return torch.nn.Identity().eval().requires_grad_(False), {'checkpoint_sha256':'trusted-checkpoint'}
+    def infer(model, tensor, device, tile, overlap):
+        if device.startswith('cuda'):
+            assert state['reset']
+        assert (tile,overlap) == (1024,128)
+        # The fake CUDA test executes only the pixel pipeline on CPU.
+        return enhance_tensor(model,tensor,'cpu',tile,overlap)
+    monkeypatch.setattr(inference,'load_v16',load)
+    monkeypatch.setattr(inference,'enhance_tensor',infer)
+    return SimpleNamespace(migration=migration,inference=inference,record=record,
+                           out=record.parent/'retry',state=state,pixels=pixels,
+                           source=source,protected=[prepared,enhanced,record])
+
+
+@pytest.mark.parametrize('device',['cuda:0','cuda'])
+def test_probe_initializes_cold_allocator_before_peak_reset(cold_cuda_probe, device):
+    f = cold_cuda_probe
+    with pytest.raises(RuntimeError,match='Invalid device argument'):
+        torch.cuda.reset_peak_memory_stats(0)
+    before = snapshot(f.protected)
+    result = f.migration.probe_uie(f.record,device,output=f.out)
+    assert result['status']=='pass' and result['stage']=='complete'
+    assert result['cuda_initialized_before_probe'] is False
+    assert result['cuda_device_index']==0 and result['device']=='cuda:0'
+    assert result['inference_started'] and result['inference_completed']
+    assert result['image_id']==3 and result['peak_allocated_bytes']==1024
+    assert result['peak_reserved_bytes']==2048
+    assert np.array_equal(rgb(f.out/'probe.png'),f.pixels)
+    assert read_json(f.out/'probe.json')==result
+    assert check_snapshot(before)['status']=='pass'
+
+
+def test_probe_cpu_does_not_initialize_cuda(cold_cuda_probe):
+    f = cold_cuda_probe
+    result = f.migration.probe_uie(f.record,'cpu',output=f.out)
+    assert result['status']=='pass' and not f.state['initialized']
+    assert result['peak_allocated_bytes'] is None and 'cuda_device_index' not in result
+    assert np.array_equal(rgb(f.out/'probe.png'),f.pixels)
+
+
+@pytest.mark.parametrize('where,error,status,stage',[
+    ('load_v16',RuntimeError('checkpoint failure'),'error','load_v16'),
+    ('enhance_tensor',torch.OutOfMemoryError('synthetic CUDA OOM'),'oom','inference'),
+])
+def test_probe_preserves_stage_traceback_and_distinguishes_oom(cold_cuda_probe,monkeypatch,where,error,status,stage):
+    f = cold_cuda_probe
+    def fail(*args,**kwargs):
+        raise error
+    monkeypatch.setattr(f.inference,where,fail)
+    # A reporting failure must not hide the original checkpoint/inference exception.
+    monkeypatch.setattr(torch.cuda,'max_memory_reserved',lambda i: (_ for _ in ()).throw(RuntimeError('reporting failure')))
+    result = f.migration.probe_uie(f.record,'cuda:0',output=f.out)
+    assert result['status']==status and result['failed_stage']==stage
+    assert result['error']==repr(error) and str(error) in result['traceback']
+    assert 'probe_uie' in result['traceback']
+    assert 'peak_reserved_bytes' in result['memory_reporting_errors']
+    assert not (f.out/'probe.png').exists()
+    assert read_json(f.out/'probe.json')==result
+
+
+def test_probe_retry_preserves_failed_report_and_refuses_overwrite(cold_cuda_probe):
+    f = cold_cuda_probe
+    original = f.record.parent/'uie_memory_probe/probe.json'
+    write_json(original,{'status':'error','error':'original cold-start report'})
+    previous = original.read_bytes()
+    with pytest.raises(FileExistsError):f.migration.probe_uie(f.record,'cpu')
+    assert f.migration.probe_uie(f.record,'cpu',output=f.out)['status']=='pass'
+    with pytest.raises(FileExistsError):f.migration.probe_uie(f.record,'cpu',output=f.out)
+    assert original.read_bytes()==previous
+
+
+def test_probe_unavailable_cuda_has_no_inference_or_fake_memory(cold_cuda_probe,monkeypatch):
+    f = cold_cuda_probe
+    monkeypatch.setattr(torch.cuda,'is_available',lambda:False)
+    result = f.migration.probe_uie(f.record,'cuda:0',output=f.out)
+    assert result['status']=='error' and result['failed_stage']=='initialize_cuda'
+    assert result['inference_started'] is False and not f.state['initialized']
+    assert result['peak_allocated_bytes'] is None and 'gpu_name' not in result
+
+
+def test_probe_cli_accepts_fresh_retry_output(cold_cuda_probe):
+    f = cold_cuda_probe
+    f.migration.main(['probe-uie','--record',str(f.record),'--device','cuda:0','--output',str(f.out)])
+    assert read_json(f.out/'probe.json')['status']=='pass'
+
+
 @pytest.mark.skipif(not os.getenv('DUO_MIGRATION_SMOKE_ROOT'),reason='Optional completed synthetic host-migration receipt')
 def test_actual_synthetic_migration_recheck_and_p1_plan_receipt():
     from src.downstream_duo.evaluate import frozen_registry
