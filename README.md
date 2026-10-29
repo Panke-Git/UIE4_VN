@@ -71,6 +71,8 @@ Expected paths are formed as `data.root / manifest_relative_path`. Change only `
 
 ## Installation
 
+V16 SIFT feature-matching evaluation, including Windows WSL / RTX 3060 setup, is documented in [README_SIFT.md](README_SIFT.md).
+
 Use Python 3.10 or newer. Install a PyTorch build appropriate for the server CUDA version from the official PyTorch instructions, then install the small remaining dependency set:
 
 ```bash

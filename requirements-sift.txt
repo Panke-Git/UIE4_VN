@@ -1,0 +1,3 @@
+# Optional extra for tools/evaluate_sift.py; install in the existing V16 environment.
+# Skip if an existing OpenCV 4.x installation already provides cv2.SIFT_create.
+opencv-python-headless==4.12.0.88

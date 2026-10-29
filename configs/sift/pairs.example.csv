@@ -1,0 +1,3 @@
+pair_id,image_a,image_b,enhanced_a,enhanced_b
+scene01,raw/frame001.jpg,raw/frame002.jpg,frame001_enhanced.png,frame002_enhanced.png
+scene02,raw/frame010.jpg,raw/frame011.jpg,frame010_enhanced.png,frame011_enhanced.png
