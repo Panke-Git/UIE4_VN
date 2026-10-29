@@ -1,0 +1,64 @@
+{
+  "dataset": {
+    "name": "LSUI19",
+    "expected_pairs": 428,
+    "manifest": "/home/paxton/pro/UIE4_VN/experiments/v16_PlainUNet_ColorQuery_UICF_PreBackbone_seed3520_20260824_004528/split_snapshot/test.tsv",
+    "manifest_sha256": "cee6a22aeb2903f1cd053f641eab3aa1733f55a394682e257cb4ab4b27b0373c",
+    "data_root": "/home/paxton/pro/publicdata/LSUI19_dup_train"
+  },
+  "source_audit_dir": "/home/paxton/pro/UIE4_VN/experiments/eval_sift_reference_v2/source_update_20261030T001342",
+  "history": {
+    "run_config": "/home/paxton/pro/UIE4_VN/experiments/v16_PlainUNet_ColorQuery_UICF_PreBackbone_seed3520_20260824_004528/config_resolved.yaml",
+    "summary": "/home/paxton/pro/UIE4_VN/experiments/v16_PlainUNet_ColorQuery_UICF_PreBackbone_seed3520_20260824_004528/result/sift_gt_saved/sift_evaluation.json",
+    "per_image": "/home/paxton/pro/UIE4_VN/experiments/v16_PlainUNet_ColorQuery_UICF_PreBackbone_seed3520_20260824_004528/result/sift_gt_saved/per_pair_metrics.csv",
+    "source_index": "/home/paxton/pro/UIE4_VN/experiments/v16_PlainUNet_ColorQuery_UICF_PreBackbone_seed3520_20260824_004528/result/sift_gt_saved/sources.json",
+    "legacy_evaluator": "/home/paxton/pro/UIE4_VN/tools/evaluate_sift.py",
+    "legacy_matching": "/home/paxton/pro/UIE4_VN/tools/sift_eval/matching.py",
+    "v16_dataset_code": "/home/paxton/pro/UIE4_VN/src/v16/dataset.py"
+  },
+  "protocol": {
+    "evaluation_size_wh": [256, 256],
+    "raw_gt_resize": "Pillow BILINEAR full image to 256x256",
+    "grayscale": "OpenCV RGB2GRAY on RGB uint8; no histogram equalization",
+    "sift": {"nfeatures": 0, "contrastThreshold": 0.04, "edgeThreshold": 10, "sigma": 1.6},
+    "ratio": 0.75,
+    "identity_threshold_px": 3.0,
+    "seed": 3407,
+    "opencv_threads": 1
+  },
+  "methods": [
+    {"name": "Raw", "sota": false},
+    {
+      "name": "MARINE-Net",
+      "sota": true,
+      "prediction_dir": "/home/paxton/pro/UIE4_workspace/FX/MARINE-Net Physics-guided lightweight CNN-INR architecture for underwater image restoration and color enhancement/outputs/lsui19/marine_seed42_20261020T160532Z/predictions",
+      "filename": "{sample_id}.png",
+      "provenance_file": "/home/paxton/pro/UIE4_workspace/FX/MARINE-Net Physics-guided lightweight CNN-INR architecture for underwater image restoration and color enhancement/outputs/lsui19/marine_seed42_20261020T160532Z/paired_inference.json",
+      "implementation_note": "项目 LSUI19 复现的已保存输出；检查点按 finetune validation loss 选择。方法身份由运行配置和来源记录确认，日志没有旧逐图预测哈希，本次新记录所有图片 SHA256。"
+    },
+    {
+      "name": "SWLGM",
+      "sota": true,
+      "prediction_dir": "/home/paxton/pro/UIE4_workspace/FX/Shift-window local and global state space model for underwater image enhancement/outputs/lsui19/swlgm_lsui_prod/predictions",
+      "filename": "{sample_id}.png",
+      "provenance_file": "/home/paxton/pro/UIE4_workspace/FX/Shift-window local and global state space model for underwater image enhancement/outputs/lsui19/swlgm_lsui_prod/logs/inference.json",
+      "implementation_note": "项目 LSUI19 复现的已保存输出，检查点按 validation PSNR 选择；逐图预测哈希与推理日志核对一致。"
+    },
+    {
+      "name": "ICAR-UIE",
+      "sota": false,
+      "prediction_dir": "/home/paxton/pro/UIE4_VN/experiments/v16_PlainUNet_ColorQuery_UICF_PreBackbone_seed3520_20260824_004528/result/test_all_enhanced",
+      "filename": "{input_stem}_enhanced.png",
+      "implementation_note": "V16 best_psnr 已保存的 428 张增强结果；不加载模型权重。"
+    },
+    {
+      "name": "IMIF",
+      "sota": true,
+      "role": "additional_comparator",
+      "prediction_dir": "/home/paxton/pro/UIE4_workspace/FX/Underwater Image Enhancement via Intelligent  Optimized Multi-Exposure Image Fusion/outputs/lsui19/imif_20260928T160849Z/predictions",
+      "filename": "{sample_id}.png",
+      "provenance_file": "/home/paxton/pro/UIE4_workspace/FX/Underwater Image Enhancement via Intelligent  Optimized Multi-Exposure Image Fusion/outputs/lsui19/imif_20260928T160849Z/logs/inference_test.json",
+      "implementation_note": "额外对照，Python compatibility port。作者核心为加密 MATLAB P-code，曝光参数解释等含已记录的实现推断，来源为部分验证，不能声称与作者原程序逐位等价；不替换 MARINE-Net 或 SWLGM。"
+    }
+  ]
+}

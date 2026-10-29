@@ -1,0 +1,8 @@
+# Tested WSL analysis environment; existing duo_yolo already satisfies these.
+# Do not reinstall/replace a working OpenCV environment merely to run this tool.
+numpy==1.26.4
+Pillow==11.0.0
+opencv-python-headless==4.10.0.84
+PyYAML==6.0.2
+matplotlib==3.9.4
+pytest==8.3.4
