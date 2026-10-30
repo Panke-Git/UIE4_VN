@@ -1,6 +1,6 @@
 # ICAR-UIE V16 校正参数化消融：Mac 开发与 WSL 运行指南
 
-本次交付只在 MacBook 的 `UIE4_workspace/UIE4_VN` 开发、进行轻量 CPU 验证。没有连接 WSL、AutoDL 或 GitHub，没有提交、推送或启动正式训练。以下 WSL/Git 命令均供你以后手动执行。
+初始代码交付只在 MacBook 的 `UIE4_workspace/UIE4_VN` 开发、进行轻量 CPU 验证。后续于 2026-10-31 获得授权，通过 SSH 对 WSL 数据目录和清单做了只读核验，确认本次原 V16 协议应使用 `/home/paxton/pro/publicdata/LSUI19_dup_train`。没有启动正式训练或评估。以下 WSL/Git 命令仍供你手动执行。
 
 ## 研究范围、实现与容量
 
@@ -10,7 +10,7 @@
 /home/paxton/pro/UIE4_VN/experiments/v16_PlainUNet_ColorQuery_UICF_PreBackbone_seed3520_20260824_004528
 ```
 
-使用该运行的 `best/best_psnr.pt` 和原生 `result/test_summary.json`；不重新训练 Full UICF，不改用 V16-19、Haze4K、PNG8 paper metrics 或验证集结果。用户提供的 Full 测试值为 PSNR=28.388665、SSIM=0.928637、ΔE00=5.204765；本轮没有读取 WSL 基线文件，真实性及其与部署代码的一致性均标记为**待 WSL 验证**。
+使用该运行的 `best/best_psnr.pt` 和原生 `result/test_summary.json`；不重新训练 Full UICF，不改用 V16-19、Haze4K、PNG8 paper metrics 或验证集结果。用户提供的 Full 测试值为 PSNR=28.388665、SSIM=0.928637、ΔE00=5.204765。后续目录检查已读取基线配置和冻结清单，但没有重新核验测试摘要或权重内容；指标及其与部署代码的一致性仍标记为**待 WSL 验证**。
 
 | 标识 | 最终校正公式 | 系数/残差语义 |
 |---|---|---|
@@ -143,7 +143,7 @@ git status --short --branch
 
 ## 第三阶段：WSL 环境、GPU、数据与基线检查
 
-先激活你实际安装 PyTorch 的环境。本轮没有确认 WSL 环境名称、Python/PyTorch/CUDA 版本、GPU 型号、显存或真实数据根目录，以下均**待 WSL 验证**。
+先激活你实际安装 PyTorch 的环境。数据根目录已核实为 `/home/paxton/pro/publicdata/LSUI19_dup_train`；WSL 环境名称、Python/PyTorch/CUDA 版本、GPU 型号与显存仍需你手动检查。
 
 ```bash
 cd /home/paxton/pro/UIE4_VN
@@ -167,13 +167,12 @@ PY
 
 依赖复用已有 `requirements.txt`，新增功能没有引入额外 Python 库。若缺包，先在你选择的环境安装匹配硬件的 PyTorch，以及 `python -m pip install -r requirements.txt`；原 requirements 不安装 PyTorch，不能用它替代 CUDA/PyTorch 安装。随后再检查版本。不要自动更换全局环境。
 
-在 `/home/paxton/pro/publicdata` 下人工确认数据根目录；它应能按清单拼出 `Train/input/...`、`Train/GT/...`、`Val/input/...` 等实际相对路径，不假定某个历史 AutoDL 根目录：
+数据根目录已经确认。按原 V16 清单逐项检查，`LSUI19_dup_train` 的训练 3466 对、验证 385 对、测试 428 对文件全部存在，当前三份清单与指定基线冻结清单的 SHA256 全部一致。`LSUI19` 的 Train/Val 文件分布与该协议不同，请使用下面已经填好的路径，不修改固定划分。
 
 ```bash
 ls -ld /home/paxton/pro/UIE4_VN /home/paxton/pro/publicdata
 ls -l split/lsui19/{train,validation,test}.tsv
-read -r -p '请输入实际 LSUI 配对数据根目录（绝对路径）: ' LSUI_ROOT
-export LSUI_ROOT
+export LSUI_ROOT=/home/paxton/pro/publicdata/LSUI19_dup_train
 test -d "$LSUI_ROOT"
 export UICF_GPU=0   # 根据 nvidia-smi 人工选择，0 只是示例 GPU 索引
 python - <<'PY'
@@ -193,7 +192,7 @@ for split, rows in entries.items():
 PY
 ```
 
-以上环境/图像检查是你未来手动运行的检查，不是本轮已执行结果。正式训练入口只读取测试清单以验证划分，不载入测试图像；图像完整性预检和显式 test 才访问测试图。
+文件存在性与清单哈希检查已经完成；上面的环境检查、PIL 解码和逐图配对内容检查仍由你后续手动运行，不能将文件存在等同于图像内容已验证。正式训练入口只读取测试清单以验证划分，不载入测试图像；图像完整性预检和显式 test 才访问测试图。
 
 检查唯一基线，**只读取元数据并 stat checkpoint，不加载权重**：
 
@@ -265,7 +264,8 @@ OOM 或数值异常时停止，不自动降低 batch、模型规模、分辨率�
 
 ```bash
 cd /home/paxton/pro/UIE4_VN
-test -d "${LSUI_ROOT:?先完成第三阶段的数据根目录确认}"
+export LSUI_ROOT=/home/paxton/pro/publicdata/LSUI19_dup_train
+test -d "$LSUI_ROOT"
 : "${UICF_GPU:?先选择 GPU}"
 
 python -m src.uicf_parameterization_ablations.train \
@@ -397,7 +397,7 @@ Mac 没有基线文件时，仅为生成缺失值模板，显式执行：
 ## 尚待目标环境确认的事项
 
 - WSL 当前代码是否包含本次交付、其 Git 状态和源码版本；本轮没有远程读取。
-- 实际数据根目录、图像存在性及其与指定基线的内容一致性；本地只确认了三份固定 TSV 及哈希。
+- 数据根目录及全部清单路径的文件存在性已经通过 SSH 确认；逐图解码、配对内容及其与历史基线数据的内容一致性仍需验证。
 - 指定 Full UICF 文件、测试摘要、best_psnr 的原始选择信息及其与当前源代码的一致性。
 - CUDA AMP 的运行稳定性、batch 16 显存容量、200 epoch 正式训练和 428 张真实测试指标。
 - 本地已经执行的检查、初次测试目录设置问题和最终结果见本地测试报告；不将未执行的 WSL 检查计为通过。
