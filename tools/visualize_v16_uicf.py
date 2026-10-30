@@ -75,6 +75,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--gpu", type=int, default=None)
     parser.add_argument("--data-root", default=None)
+    paper = parser.add_argument_group("Single-forward paper figures (--paper)")
+    paper.add_argument("--paper", action="store_true", help="Export the RGB anchor and three coefficient fields from one real image")
+    paper.add_argument("--image", default=None, help="Explicit input; default: first readable test input sorted by path")
+    paper.add_argument("--output-dir", default=None, help="Exact output directory; default: <run-dir>/result/uicf_paper_vis/<image-stem>")
+    paper.add_argument("--device", default=None, help="cpu, cuda, or cuda:N; default: CUDA when available")
+    paper.add_argument("--dpi", type=int, default=600, help="Paper figure raster resolution (default: 600)")
     parser.add_argument("--num-samples", type=int, default=10)
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--indices", type=_comma_separated_indices)
@@ -497,6 +503,12 @@ def capture_sample(
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.paper:
+        from tools.v16_uicf_paper import run
+        run(args)
+        return
+    if args.image is not None or args.output_dir is not None or args.device is not None:
+        raise ValueError("--image, --output-dir and --device require --paper")
     run_dir = project_path(args.run_dir).expanduser().resolve()
     config_path = run_dir / "config_resolved.yaml"
     if not config_path.is_file():
