@@ -40,7 +40,7 @@ from src.v16.dataset import LSUIDataset, ManifestEntry, read_manifest
 from src.v16.utils import atomic_json, load_yaml, sha256_file
 
 
-SCRIPT_VERSION = "1.0"
+SCRIPT_VERSION = "1.3"
 EXPECTED_VERSION = "v16"
 DEFAULT_OUTPUT_NAME = "chromatic_restoration_analysis"
 ANALYSIS_FILENAMES = (
@@ -568,7 +568,7 @@ def save_final_figure(
     de_vmax: float,
     dpi: int,
     show_sample_id: bool,
-) -> None:
+) -> tuple[tuple[float, float], tuple[float, float]]:
     if not samples:
         raise ValueError("Final figure requires at least one sample")
     histograms = []
@@ -583,21 +583,56 @@ def save_final_figure(
     histogram_norm = _shared_hist_norm(histograms)
     de_norm = Normalize(vmin=0.0, vmax=de_vmax, clip=True)
     extent = [a_edges[0], a_edges[-1], b_edges[0], b_edges[-1]]
+    # Leave room around the ±80 ticks and expand the view if occupied bins need it.
+    occupied_a, occupied_b = np.nonzero(np.any(histograms, axis=0))
+    display_limit = max(
+        84.0,
+        abs(float(a_edges[occupied_a.min()])),
+        abs(float(a_edges[occupied_a.max() + 1])),
+        abs(float(b_edges[occupied_b.min()])),
+        abs(float(b_edges[occupied_b.max() + 1])),
+    )
+    a_limits = (max(float(a_edges[0]), -display_limit), min(float(a_edges[-1]), display_limit))
+    b_limits = (max(float(b_edges[0]), -display_limit), min(float(b_edges[-1]), display_limit))
     columns = (
         "Input",
         "ICAR-UIE",
         "Reference",
-        "Input vs Ref.",
-        "ICAR-UIE vs Ref.",
+        "Input\nvs Ref.",
+        "ICAR-UIE\nvs Ref.",
     )
 
-    with plt.rc_context(_paper_rc()):
-        figure, axes = plt.subplots(
-            len(samples),
-            5,
-            squeeze=False,
-            figsize=(11.6, max(2.15 * len(samples), 2.5)),
-            facecolor="white",
+    row_count = len(samples)
+    row_spacing = 0.12
+    top_mm, bottom_mm = 10.0, 6.6
+    height_mm = top_mm + bottom_mm + 13.0 * (row_count + (row_count - 1) * row_spacing)
+    figure_style = {
+        **_paper_rc(),
+        "font.size": 5.7,
+        "axes.titlesize": 5.7,
+        "axes.labelsize": 5.7,
+        "xtick.labelsize": 5.0,
+        "ytick.labelsize": 5.0,
+        "axes.linewidth": 0.45,
+        "xtick.major.width": 0.45,
+        "ytick.major.width": 0.45,
+    }
+    with plt.rc_context(figure_style):
+        figure = plt.figure(figsize=(85.0 / 25.4, height_mm / 25.4), facecolor="white")
+        grid = figure.add_gridspec(
+            row_count,
+            7,
+            width_ratios=(1, 1, 1, 0.03, 1, 1, 0.105),
+            left=0.115,
+            right=0.943,
+            top=1.0 - top_mm / height_mm,
+            bottom=bottom_mm / height_mm,
+            wspace=0.09,
+            hspace=row_spacing,
+        )
+        panel_columns = (0, 1, 2, 4, 5)  # Column 3 adds space between the two groups.
+        axes = np.array(
+            [[figure.add_subplot(grid[row, col]) for col in panel_columns] for row in range(row_count)]
         )
         de_image = None
         for row, (sample, distributions) in enumerate(
@@ -614,17 +649,31 @@ def save_final_figure(
                     interpolation="nearest",
                     aspect="equal",
                 )
-                axis.set_xlim(a_edges[0], a_edges[-1])
-                axis.set_ylim(b_edges[0], b_edges[-1])
+                axis.set_xlim(*a_limits)
+                axis.set_ylim(*b_limits)
                 axis.set_aspect("equal", adjustable="box")
-                axis.xaxis.set_major_locator(MaxNLocator(5))
-                axis.yaxis.set_major_locator(MaxNLocator(5))
-                if row == len(samples) - 1:
-                    axis.set_xlabel("a*")
+                axis.xaxis.set_major_locator(MaxNLocator(nbins=3, steps=(1, 2, 4, 8, 10)))
+                axis.yaxis.set_major_locator(MaxNLocator(nbins=3, steps=(1, 2, 4, 8, 10)))
+                axis.tick_params(
+                    length=1.5,
+                    pad=1.1,
+                    labelbottom=row == row_count - 1,
+                    left=column == 0,
+                    labelleft=column == 0,
+                )
+                if row == row_count - 1:
+                    axis.set_xlabel("a*", labelpad=0.8)
+                    visible_labels = [
+                        label
+                        for tick, label in zip(axis.get_xticks(), axis.get_xticklabels(), strict=True)
+                        if a_limits[0] <= tick <= a_limits[1]
+                    ]
+                    # Align the outer numbers inward so they clear the neighboring panel.
+                    if len(visible_labels) > 1:
+                        visible_labels[0].set_ha("left")
+                        visible_labels[-1].set_ha("right")
                 if column == 0:
-                    axis.set_ylabel("b*")
-                else:
-                    axis.tick_params(labelleft=False)
+                    axis.set_ylabel("b*", labelpad=1.3)
             for column, values in enumerate(
                 (sample.input_e00_map, sample.output_e00_map), start=3
             ):
@@ -637,56 +686,45 @@ def save_final_figure(
                 )
                 axis.set_xticks([])
                 axis.set_yticks([])
-            axes[row, 0].text(
-                -0.35,
-                0.5,
+            axes[row, 0].annotate(
                 _row_label(row, sample.entry.sample_id, show_sample_id),
-                transform=axes[row, 0].transAxes,
+                xy=(0.0, 1.0),
+                xycoords="axes fraction",
+                xytext=(-14.5, -0.6),
+                textcoords="offset points",
                 ha="right",
-                va="center",
-                fontsize=9,
+                va="top",
+                weight="bold",
             )
-        for column, title in enumerate(columns):
-            axes[0, column].set_title(title, pad=13)
-        figure.text(
-            0.315,
-            0.99,
-            "Chromatic distribution in CIELAB a*-b* plane",
-            ha="center",
-            va="top",
-            fontsize=9.5,
-            weight="semibold",
-        )
-        figure.text(
-            0.792,
-            0.99,
-            "Spatial color error",
-            ha="center",
-            va="top",
-            fontsize=9.5,
-            weight="semibold",
-        )
-        figure.subplots_adjust(
-            left=0.065, right=0.91, bottom=0.12, top=0.89, wspace=0.22, hspace=0.25
-        )
+        for axis, title in zip(axes[0], columns, strict=True):
+            axis.set_title(title, pad=2.2, linespacing=1.0)
+        for first, last, title in (
+            (0, 2, "CIELAB a*-b* distribution"),
+            (3, 4, "Spatial color error"),
+        ):
+            x = (axes[0, first].get_position().x0 + axes[0, last].get_position().x1) / 2
+            figure.text(
+                x, 1.0 - 0.9 / height_mm, title, ha="center", va="top", weight="bold"
+            )
         if de_image is None:
             raise RuntimeError("DeltaE00 image artist was not created")
         colorbar = figure.colorbar(
             de_image,
-            ax=axes[:, 3:].reshape(-1).tolist(),
-            fraction=0.035,
-            pad=0.025,
+            cax=figure.add_subplot(grid[:, -1]),
+            ticks=MaxNLocator(nbins=4, steps=(1, 2, 5, 10)),
         )
-        colorbar.set_label("Delta E00")
+        colorbar.ax.set_title(r"$\Delta E_{00}$", pad=2.0)
+        colorbar.ax.tick_params(length=1.5, pad=1.1)
         for extension in ("png", "pdf", "svg"):
             figure.savefig(
                 output_dir / f"chromatic_restoration_analysis.{extension}",
                 dpi=dpi,
-                bbox_inches="tight",
+                bbox_inches="tight" if show_sample_id else None,
                 facecolor="white",
                 transparent=False,
             )
         plt.close(figure)
+    return a_limits, b_limits
 
 
 def save_candidate_contact_sheet(
@@ -986,7 +1024,7 @@ def main(argv: list[str] | None = None) -> None:
         de_vmax_override=args.de_vmax,
         dpi=args.dpi,
     )
-    save_final_figure(
+    a_limits, b_limits = save_final_figure(
         figure_samples,
         output_dir,
         a_edges=a_edges,
@@ -1038,6 +1076,7 @@ def main(argv: list[str] | None = None) -> None:
         ),
         "ab_bins": args.ab_bins,
         "ab_range": [args.ab_min, args.ab_max],
+        "ab_display_limits": {"a_star": a_limits, "b_star": b_limits},
         "ab_histogram_normalization": "probability mass divided by total image pixels",
         "ab_panel_normalization": "one shared LogNorm across every a*b* panel",
         "de_visualization_vmin": 0.0,
