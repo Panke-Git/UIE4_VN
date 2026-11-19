@@ -18,3 +18,10 @@ analysis/
 .DS_Store
 .idea/
 .vscode/
+
+# USOD10K assets and host-local configuration
+/configs/downstream_usod/paths.local.yaml
+/publicdata/
+/assets/downstream_usod/
+/outputs/downstream_usod/
+*.pth.tar

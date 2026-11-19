@@ -1,0 +1,9 @@
+# tile_size: 0 and overlap: 0 give native inference.
+tile_size: 1024
+overlap: 128
+enhancement_batch: 1
+saliency_batch: 1
+bootstrap_replicates: 5000
+bootstrap_seed: 3520
+examples_per_group: 3
+smoke_images: 3

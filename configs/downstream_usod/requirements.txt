@@ -1,0 +1,3 @@
+# Install into an overlay venv on an already working PyTorch/torchvision environment.
+timm==1.0.29
+# Core also uses NumPy, Pillow and PyYAML, supplied by the project's pax environment.

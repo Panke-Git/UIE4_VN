@@ -1,0 +1,28 @@
+# Copy to paths.local.yaml and edit for the host. Relative paths resolve here.
+device: cuda:0
+output_root: ../../experiments/downstream_usod/tc_usod_20261119_v1
+usod10k:
+  test_root: /path/to/USOD10K/USOD10K-TE
+  rgb_dir: USOD10K-TE-RGB
+  depth_dir: USOD10K-TE-depth
+  gt_dir: USOD10K-TE-GT
+tc_usod:
+  repository: /path/to/pinned/USOD10K
+  checkpoint: /path/to/official/TCUSOD.pth
+  sha256: a17524c8374b60c12c7c81e87b3ebfe657ec49c4f8b5cfeedbb82eb77e2b0c29
+v16:
+  lsui:
+    config: /path/to/LSUI-V16-run/config_resolved.yaml
+    checkpoint: /path/to/LSUI-V16-run/best/best_psnr.pt
+  uieb:
+    config: /path/to/UIEB-V16-run/config_resolved.yaml
+    checkpoint: /path/to/UIEB-V16-run/best/best_psnr.pt
+fx_root: /path/to/FX
+# Entries are opt-in. Each Python interpreter must already support its model.
+fx: {}
+# fx:
+#   waternet:
+#     source: lsui
+#     python: /path/to/fx-environment/bin/python
+#     checkpoint: /path/to/validation-selected/best_psnr.pt
+#     sha256: <full SHA-256>
