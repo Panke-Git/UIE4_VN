@@ -93,6 +93,19 @@ bash scripts/downstream_usod/check_autodl_assets.sh --commit "$release" --paths 
 
 单独阶段通过 CLI 的 prepare、enhance、saliency、evaluate、analyze、visualize 子命令访问。用各子命令的 --help 查看参数。P0、P1、P2 共用固定 Test；后续两阶段需要已完成的 P0。
 
+### SWLGM 矩形输入
+
+SWLGM 源码 `dfa27b81e6d3398a88cdf8e53871dcf96096588b` 的 MSFFN 将张量还原为 `B,C,W,H`，导致 640×480 输入无法完成残差相加。`scripts/downstream_usod/patches/swlgm_msffn_hw.patch` 仅将形状还原为 `B,C,H,W`。Mac CPU 验证了两种方形尺寸的逐元素一致性，以及横向和纵向矩形输入的输出尺寸和有限性。训练权重、32 像素对齐及 PNG8 导出沿用原 FX 路径。
+
+在独立的 FX 部署副本中核验并应用补丁，随后给 P1 命令加上 `--fx-root` 指向该副本。文件位于 SWLGM 论文目录的 `SWLGM-main/basicsr/models/archs/restormer_arch.py`。以下两个摘要可用于核对补丁前后的状态。
+
+| 源文件 | SHA-256 |
+| --- | --- |
+| 作者版本 | d7abc06924a3d5724ba95829ac38079e0ef58b8b20c504e4325a792c7b9730bd |
+| 应用尺寸兼容补丁后 | 077f28b475880bffe141796a748b0c2ec17ad9b2746571dd775f92859a13e209 |
+
+P1 的逐样本收据会记录 FX 源代码摘要。重试时将旧版 SWLGM 的烟测目录和汇总保存为历史记录，以便在同一 P0 发布版本下重新验证该方法。
+
 ## 结果结构与回传
 
 ```text

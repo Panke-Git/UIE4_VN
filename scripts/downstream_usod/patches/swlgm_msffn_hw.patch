@@ -1,0 +1,11 @@
+--- a/SWLGM-main/basicsr/models/archs/restormer_arch.py
++++ b/SWLGM-main/basicsr/models/archs/restormer_arch.py
+@@ -389,7 +389,7 @@
+     def forward(self, x):
+         x_in = x
+         b, c, h, w = x.shape
+-        x = (self.ln(x.view(b, -1, c))).view(b, c, w, h)
++        x = (self.ln(x.view(b, -1, c))).view(b, c, h, w)
+         x1 = self.a1(self.relu1(self.a(x)))
+         x2 = self.b1(self.b(x))
+         x3 = self.c1(self.c(x))
