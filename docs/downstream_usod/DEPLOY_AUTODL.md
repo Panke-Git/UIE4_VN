@@ -93,6 +93,18 @@ bash scripts/downstream_usod/check_autodl_assets.sh --commit "$release" --paths 
 
 单独阶段通过 CLI 的 prepare、enhance、saliency、evaluate、analyze、visualize 子命令访问。用各子命令的 --help 查看参数。P0、P1、P2 共用固定 Test；后续两阶段需要已完成的 P0。
 
+### 补齐 P1 到九个 FX 方法
+
+将新配置的 `output_root` 指向独立目录，`--reference-run` 指向已有 P0 和五个 FX 方法均完整的正式实验。使用原实验的 TC-USOD 环境和资产路径。新 FX 配置包含 PUGAN 的三个 Par 权重、UVZ 的增强权重和内部深度权重、HDAMS-Net 的正式权重，以及 IMIF 在 LSUI 验证通过的固定算法状态。每个附加文件在 `fx.<method>.auxiliary` 中配置 `path` 和 `sha256`，键名见路径模板。HDAMS-Net 的 FX 目录需保留原源码及 `validation/source_provenance.json`。
+
+```bash
+python -B -m src.downstream_usod.cli extend-p1 \
+  --paths /path/to/paths-p1-fx9.yaml --commit "$commit" \
+  --reference-run /path/to/completed/five-method-run
+```
+
+命令核验原实验的逐图输入和预测收据，补跑 PUGAN、UVZ、IMIF、HDAMS-Net。TC-USOD 始终读取同一份 Test Depth。汇总、配对统计和可视化写入新目录，复用来源记录在 `audit/p1_reference.json`。
+
 ### SWLGM 矩形输入
 
 SWLGM 源码 `dfa27b81e6d3398a88cdf8e53871dcf96096588b` 的 MSFFN 将张量还原为 `B,C,W,H`，导致 640×480 输入无法完成残差相加。`scripts/downstream_usod/patches/swlgm_msffn_hw.patch` 仅将形状还原为 `B,C,H,W`。Mac CPU 验证了两种方形尺寸的逐元素一致性，以及横向和纵向矩形输入的输出尺寸和有限性。训练权重、32 像素对齐及 PNG8 导出沿用原 FX 路径。

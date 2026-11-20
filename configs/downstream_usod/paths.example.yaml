@@ -26,3 +26,7 @@ fx: {}
 #     python: /path/to/fx-environment/bin/python
 #     checkpoint: /path/to/validation-selected/best_psnr.pt
 #     sha256: <full SHA-256>
+# PUGAN requires auxiliary entries par_d, par_t and par_a.
+# UVZ requires auxiliary.depth. Each auxiliary entry has path and sha256.
+# IMIF uses auxiliary.selection and auxiliary.algorithm_state plus CPU workers.
+# The IMIF selection file sits one directory below algorithm_state.json.

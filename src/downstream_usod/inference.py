@@ -10,21 +10,26 @@ from .storage import atomic_file, digest, event, read_json, seal_json, sha256_fi
 
 
 class ImageStage:
-    def __init__(self, root, kind, method, samples, identity, mode):
+    def __init__(self, root, kind, method, samples, identity, mode, *, read_only=False):
         self.root = Path(root)
         self.kind, self.method, self.mode = kind, method, mode
         self.samples = samples
         self.images = self.root / kind / method
         self.audit = self.root / "audit/stages" / kind / method
         self.log = self.root / "logs" / f"{kind}_{method}.jsonl"
-        self.identity = {"schema": 1, "kind": kind, "method": method, "mode": mode,
-                         "sample_ids": [sample.sample_id for sample in samples], **identity}
+        self.read_only = read_only
+        self.identity = {**identity, "schema": 1, "kind": kind, "method": method, "mode": mode,
+                         "sample_ids": [sample.sample_id for sample in samples]}
         seal = self.audit / "identity.json"
-        if not seal.exists() and self.images.exists() and any(self.images.iterdir()):
-            raise ValueError(f"cannot claim an existing image directory without a receipt: {self.images}")
-        seal_json(seal, self.identity)
+        if read_only:
+            if read_json(seal) != self.identity or not self.images.is_dir():
+                raise ValueError(f"inconsistent saved stage: {self.audit}")
+        else:
+            if not seal.exists() and self.images.exists() and any(self.images.iterdir()):
+                raise ValueError(f"cannot claim an existing image directory without a receipt: {self.images}")
+            seal_json(seal, self.identity)
+            self.images.mkdir(parents=True, exist_ok=True)
         self.identity_sha256 = digest(self.identity)
-        self.images.mkdir(parents=True, exist_ok=True)
         expected = {f"{sample.sample_id}.png" for sample in samples}
         extra = sorted(p.name for p in self.images.glob("*.png") if p.name not in expected)
         if extra:
@@ -52,6 +57,8 @@ class ImageStage:
         return value["sha256"]
 
     def save(self, sample, image, inputs):
+        if self.read_only:
+            raise ValueError(f"cannot write a reference stage: {self.audit}")
         if image.mode != self.mode or image.size != sample.size:
             raise ValueError(f"{sample.sample_id}: expected {self.mode} PNG at {sample.size}, "
                              f"got {image.mode} at {image.size}")
@@ -72,7 +79,12 @@ class ImageStage:
             digests.append([sample.sample_id, checksum])
         result = {"stage_sha256": self.identity_sha256, "count": len(digests),
                   "image_set_sha256": digest(digests)}
-        seal_json(self.audit / "complete.json", result)
+        receipt = self.audit / "complete.json"
+        if self.read_only:
+            if read_json(receipt) != result:
+                raise ValueError(f"saved completion receipt changed: {receipt}")
+        else:
+            seal_json(receipt, result)
         return result
 
     def load(self, sample):
@@ -139,9 +151,13 @@ def _run(stage, runner, batch_size, input_hashes, load_input, match_geometry):
     return stage.complete()
 
 
-def enhance(stage, runner, data_root, batch_size):
+def enhance(stage, runner, data_root, batch_size, *, with_sample_ids=False):
+    def load_input(sample):
+        image = read_input(data_root, sample, "rgb")
+        return (sample.sample_id, image) if with_sample_ids else image
+
     return _run(stage, runner, batch_size, lambda sample: {"rgb": sample.hashes["rgb"]},
-                lambda sample: read_input(data_root, sample, "rgb"), match_geometry=True)
+                load_input, match_geometry=True)
 
 
 def saliency(stage, runner, data_root, batch_size, enhanced=None):

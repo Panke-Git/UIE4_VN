@@ -5,7 +5,7 @@
 | 阶段 | 条件与验收 |
 | --- | --- |
 | P0 | Raw、ICAR-UIE 各覆盖全部 1,026 个官方 ID。通过相同资产的 CUDA smoke 后生成逐图预测、六项指标、逐图配对变化和 95% 配对 bootstrap 区间。 |
-| P1 | 在 P0 完整后，按配置逐个验证 WaterNet、Ucolor、FDCE-Net、MARINE-Net、SWLGM。纳入全量完成的 baseline，逐一记录缺失资产或推理失败。 |
+| P1 | 在 P0 完整后，按配置验证 WaterNet、Ucolor、PUGAN、FDCE-Net、UVZ、IMIF、HDAMS-Net、SWLGM、MARINE-Net。已有五组正式结果时，可以仅补跑其余四组并重新汇总。 |
 | P2 | 在 P0 完整后，用冻结的 UIEB 正式权重及独立 smoke 增加条件。汇总与原 Raw 和 LSUI 主条件配对。 |
 
 运行配置在 config 目录。默认用 1024 tile、128 overlap、FP32、批大小 1。超过 tile 的输入使用重叠拼接，小图直接做原尺寸前向。USOD10K 这版官方 Test 全部为 640×480，因此默认条件对全 Test 使用整图。需要原尺寸模式时把 tile_size 和 overlap 都设为 0。批处理只把原尺寸相同的增强样本放进同一个 batch。不同推理配置使用不同输出目录。

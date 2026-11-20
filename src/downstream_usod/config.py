@@ -15,7 +15,9 @@ TEST_COUNT = 1026
 TEST_IDS_SHA256 = "e1cb352150706d388c4683abf9b0ae0279fe36d75dd9b964280abb5c4cd8aa92"
 OFFICIAL_PREDICTIONS = "TC_USOD/preds/USOD10K"
 TC_INPUT_SIZE = 224
-FX_METHODS = ("waternet", "ucolor", "fdce_net", "marine_net", "swlgm")
+INITIAL_FX_METHODS = ("waternet", "ucolor", "fdce_net", "marine_net", "swlgm")
+ADDITIONAL_FX_METHODS = ("pugan", "uvz", "imif", "hdams_net")
+FX_METHODS = ("waternet", "ucolor", "pugan", "fdce_net", "uvz", "imif", "hdams_net", "swlgm", "marine_net")
 DATA_DIRS = {"rgb": "USOD10K-TE-RGB", "depth": "USOD10K-TE-depth", "gt": "USOD10K-TE-GT"}
 
 V16_CHECKPOINTS = {

@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
@@ -8,12 +9,15 @@ import torch
 import yaml
 
 from src.downstream_duo.smoke import tiny_v16_config
+from src.downstream_usod.config import ADDITIONAL_FX_METHODS, FX_METHODS, INITIAL_FX_METHODS, P0_METHODS
 from src.downstream_usod.config import V16_CHECKPOINTS, Paths, Protocol
 from src.downstream_usod.dataset import manifest, read_input, scan_test
 from src.downstream_usod.evaluation import evaluate_method
 from src.downstream_usod.inference import ImageStage, enhance, saliency
+from src.downstream_usod.p1_extension import extend_p1
 from src.downstream_usod import pipeline
 from src.downstream_usod.pipeline import claim, verify_output_root
+from src.downstream_usod.storage import digest, read_json, write_json
 from src.downstream_usod.tc_usod_adapter import TCUSOD
 from src.downstream_usod.v16_adapter import V16Enhancer, v16_identity
 from src.downstream_usod.visualization import make_figure
@@ -193,3 +197,65 @@ def test_phase_orchestration_uses_smoke_and_preserves_primary_results(test_data,
     runtime.smoke("p2")
     assert runtime.run("p2")["metrics"][-1]["method"] == "icar_uie_uieb"
     assert (destination / "reports/p0_summary.json").read_bytes() == original_report
+
+
+def test_p1_extension_reuses_sealed_predictions_and_checks_depth(test_data, tmp_path):
+    data, ids = test_data
+    samples = scan_test(data, DIRS, ids, official=False)
+    original, extension = tmp_path / "original", tmp_path / "extension"
+    tc_sha, lsui_v16 = "a" * 64, {"source": "lsui"}
+    coverage = {
+        method: {"status": "complete", "checkpoint_sha256": "b" * 64, "training_source": "lsui"}
+        for method in (*INITIAL_FX_METHODS, *ADDITIONAL_FX_METHODS)
+    }
+
+    def runtime(root, release):
+        exp = pipeline.Experiment.__new__(pipeline.Experiment)
+        exp.root, exp.samples, exp.paths = root, samples, SimpleNamespace(test_root=data)
+        exp.protocol = Protocol(0, 0, 1, 1, 12, 0, 1, 2)
+        exp.identity = {"release": release, "lsui_v16": lsui_v16}
+        exp.tc_sha256, exp.signature = tc_sha, digest(exp.identity)
+        write_json(root / "audit/run.json", exp.identity)
+        write_json(root / "manifests/test.json", manifest(samples, official=False))
+        return exp
+
+    def prediction(exp, method):
+        enhanced = None
+        if method != "raw":
+            provenance = {"v16": lsui_v16} if method == "icar_uie" else {
+                key: value for key, value in coverage[method].items() if key != "status"
+            }
+            enhanced = ImageStage(exp.root, "enhanced", method, samples,
+                                  {"signature": exp.signature, **provenance}, "RGB")
+            enhance(enhanced, list, data, 1)
+        stage, _ = exp.predictions(method, exp.root, samples, enhanced)
+        saliency(stage, lambda pairs: [rgb.convert("L") for rgb, _ in pairs], data, 1, enhanced)
+        return stage
+
+    old = runtime(original, "old")
+    stages = {method: prediction(old, method) for method in (*P0_METHODS, *INITIAL_FX_METHODS)}
+    rows = old.measure(samples, stages, original)
+    old.report("p0", {method: rows[method] for method in P0_METHODS}, stages, visualize=False)
+    old.report("p1", rows, stages, {m: coverage[m] for m in INITIAL_FX_METHODS}, visualize=False)
+    timestamps = {path: path.stat().st_mtime_ns for path in original.rglob("*") if path.is_file()}
+    new = runtime(extension, "new")
+
+    def run_additions(target, methods):
+        assert tuple(methods) == ADDITIONAL_FX_METHODS
+        assert all(stage.read_only and stage.root == original for stage in target.values())
+        target.update({method: prediction(new, method) for method in methods})
+        return {method: coverage[method] for method in methods}
+
+    new.run_fx_methods = run_additions
+    report = extend_p1(new, original)
+    assert report["status"] == "complete"
+    assert [row["method"] for row in report["metrics"]] == [*P0_METHODS, *FX_METHODS]
+    assert {p: p.stat().st_mtime_ns for p in original.rglob("*") if p.is_file()} == timestamps
+    assert not (extension / "predictions/raw").exists()
+
+    receipt = stages["waternet"].receipt_path(samples[0])
+    tampered = read_json(receipt)
+    tampered["inputs"]["depth"] = "incorrect"
+    write_json(receipt, tampered)
+    with pytest.raises(ValueError, match="different inputs"):
+        extend_p1(new, original)

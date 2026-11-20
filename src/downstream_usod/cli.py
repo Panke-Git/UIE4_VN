@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 import sys
 
-from .config import DEFAULT_PROTOCOL, FX_METHODS, Paths, Protocol
-from .storage import event, run_lock
+from .config import DEFAULT_PROTOCOL, FX_METHODS, INITIAL_FX_METHODS, Paths, Protocol
+from .storage import assert_separate_output, event, run_lock
 
 
 def parser():
@@ -25,6 +25,10 @@ def parser():
     audit.add_argument("--deployed", action="store_true", help="require the published commit and CUDA")
     smoke = commands.add_parser("smoke", parents=[common], help="test real inputs, weights and alignment on CUDA")
     smoke.add_argument("--phase", default="p0", choices=("p0", "p2"))
+    extension = commands.add_parser(
+        "extend-p1", parents=[common], help="reuse the first five completed FX stages and run four more",
+    )
+    extension.add_argument("--reference-run", type=Path, required=True)
     for command, description in {
         "enhance": "generate or resume one enhanced condition",
         "saliency": "generate or resume one saliency condition",
@@ -35,7 +39,7 @@ def parser():
     }.items():
         action = commands.add_parser(command, parents=[common], help=description)
         action.add_argument("--phase", default="p0", choices=("p0", "p1", "p2"))
-        action.add_argument("--fx-methods", nargs="+", default=FX_METHODS, choices=FX_METHODS,
+        action.add_argument("--fx-methods", nargs="+", default=INITIAL_FX_METHODS, choices=FX_METHODS,
                             help="selected P1 baselines, in display order")
         if command in ("enhance", "saliency"):
             action.add_argument("--method", required=True)
@@ -58,6 +62,10 @@ def execute(args, paths, protocol, root):
         return preflight(paths, root, release, args.load_models, args.phase, args.fx_root)
 
     experiment = Experiment(paths, root, protocol, release, args.fx_root)
+    if action == "extend-p1":
+        from .p1_extension import extend_p1
+
+        return extend_p1(experiment, args.reference_run.expanduser().resolve())
     if action == "smoke":
         if args.phase == "p2":
             experiment.require_p0()
@@ -108,6 +116,8 @@ def main(argv=None):
         protocol = Protocol.load(args.config)
         root = args.output_root.expanduser().resolve() if args.output_root else paths.output
         verify_output_root(root, paths, args.fx_root)
+        if args.command == "extend-p1":
+            assert_separate_output(root, [args.reference_run.expanduser().resolve()])
         with run_lock(root):
             claim(root)
             claimed = True
@@ -118,6 +128,8 @@ def main(argv=None):
                       error_type=type(error).__name__, error=str(error))
                 raise
         print(json.dumps(report, indent=2, ensure_ascii=False))
+        if (args.command == "extend-p1" and report["status"] != "complete"):
+            return 1
         if report["status"] == "blocked" or any(
             value["status"] == "failed" for value in report.get("fx", {}).values()
         ):

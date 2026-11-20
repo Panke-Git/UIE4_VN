@@ -41,6 +41,7 @@ def make_figure(samples, root, methods, predictions, destination, per_group):
         "raw": "Raw prediction", "icar_uie": "ICAR-UIE", "icar_uie_uieb": "ICAR-UIE (UIEB)",
         "waternet": "WaterNet", "ucolor": "Ucolor", "fdce_net": "FDCE-Net",
         "marine_net": "MARINE-Net", "swlgm": "SWLGM",
+        "pugan": "PUGAN", "uvz": "UVZ", "imif": "IMIF", "hdams_net": "HDAMS-Net",
     }
     group_names = {
         "largest_mae_gain": "Largest MAE gains",

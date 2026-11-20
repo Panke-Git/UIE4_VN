@@ -8,7 +8,7 @@ import re
 
 import torch
 
-from .config import FX_METHODS, P0_METHODS, PROJECT, TC_COMMIT, TC_REPOSITORY, V16_METHODS
+from .config import FX_METHODS, INITIAL_FX_METHODS, P0_METHODS, PROJECT, TC_COMMIT, TC_REPOSITORY, V16_METHODS
 from .dataset import git, manifest, official_ids, read_manifest, scan_test
 from .evaluation import METRIC_PROTOCOL, METRICS, evaluate_method
 from .fx_adapter import FXAsset, run_fx
@@ -52,8 +52,14 @@ def verify_output_root(root, paths, fx_root=None):
     if fx_root or paths.values.get("fx_root"):
         protected.append(Path(fx_root).expanduser().resolve() if fx_root else paths.path(None, "fx_root"))
     for method, item in paths.section("fx").items():
-        if isinstance(item, dict) and item.get("checkpoint"):
-            protected.append(paths.resolve(item["checkpoint"], f"fx.{method}.checkpoint"))
+        if isinstance(item, dict):
+            if item.get("checkpoint"):
+                protected.append(paths.resolve(item["checkpoint"], f"fx.{method}.checkpoint"))
+            auxiliary = item.get("auxiliary")
+            if isinstance(auxiliary, dict):
+                for name, spec in auxiliary.items():
+                    if isinstance(spec, dict) and spec.get("path"):
+                        protected.append(paths.resolve(spec["path"], f"fx.{method}.auxiliary.{name}.path"))
     assert_separate_output(root, protected)
 
 
@@ -148,7 +154,7 @@ def preflight(paths, root, release, load_models, phase, fx_root):
         for method in FX_METHODS:
             try:
                 asset = FXAsset.load(paths, method, fx_root)
-                baselines[method] = {"status": "assets_verified", "sha256": asset.sha256}
+                baselines[method] = {"status": "assets_verified", "sha256": asset.sha256, **asset.provenance()}
             except (OSError, ValueError) as error:
                 baselines[method] = {"status": "unavailable", "reason": str(error)}
     report = {"status": "passed" if all(item["status"] == "passed" for item in checks.values()) else "blocked",
@@ -318,7 +324,25 @@ class Experiment:
             seal_json(destination / f"{phase}_summary.json", result)
         return result
 
-    def run(self, phase, fx_methods=FX_METHODS):
+    def run_fx_methods(self, stages, fx_methods):
+        statuses = {}
+        for method in fx_methods:
+            try:
+                fx = FXAsset.load(self.paths, method, self.fx_root)
+            except (OSError, ValueError) as error:
+                statuses[method] = {"status": "unavailable", "reason": str(error)}
+                continue
+            try:
+                self.smoke(method, fx=fx)
+                enhanced = self.run_enhancement(method, self.root, self.samples, fx=fx)
+                stages[method] = self.run_saliency(method, self.root, self.samples, enhanced)
+            except (OSError, ValueError, RuntimeError) as error:
+                statuses[method] = {"status": "failed", "reason": str(error)}
+                continue
+            statuses[method] = {"status": "complete", **fx.provenance()}
+        return statuses
+
+    def run(self, phase, fx_methods=INITIAL_FX_METHODS):
         self.require_smoke("p0")
         if phase != "p0":
             self.require_p0()
@@ -333,21 +357,7 @@ class Experiment:
             enhanced = self.run_enhancement(method, self.root, self.samples)
             stages[method] = self.run_saliency(method, self.root, self.samples, enhanced)
         if phase == "p1":
-            for method in fx_methods:
-                try:
-                    fx = FXAsset.load(self.paths, method, self.fx_root)
-                except (OSError, ValueError) as error:
-                    statuses[method] = {"status": "unavailable", "reason": str(error)}
-                    continue
-                try:
-                    self.smoke(method, fx=fx)
-                    enhanced = self.run_enhancement(method, self.root, self.samples, fx=fx)
-                    stages[method] = self.run_saliency(method, self.root, self.samples, enhanced)
-                except (OSError, ValueError, RuntimeError) as error:
-                    statuses[method] = {"status": "failed", "reason": str(error)}
-                    continue
-                statuses[method] = {"status": "complete", "checkpoint_sha256": fx.sha256,
-                                    "training_source": fx.source}
+            statuses = self.run_fx_methods(stages, fx_methods)
         rows = self.measure(self.samples, stages, self.root)
         result = self.report(phase, rows, stages, statuses)
         event(self.root / "logs/pipeline.jsonl", phase=phase, status=result["status"],
@@ -355,7 +365,7 @@ class Experiment:
         return result
 
 
-def phase_methods(phase, fx_methods=FX_METHODS):
+def phase_methods(phase, fx_methods=INITIAL_FX_METHODS):
     requested = tuple(fx_methods)
     if set(requested) - set(FX_METHODS) or len(set(requested)) != len(requested):
         raise ValueError("FX method list must contain only unique supported method names")
