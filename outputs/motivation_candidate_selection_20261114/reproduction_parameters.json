@@ -1,0 +1,261 @@
+{
+  "release": "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/UIE4_VN/analysis/motivation_correction_demand/run_20261106_005616_delivery",
+  "release_inventory_sha256": "623aa2ccc3e2140aa720e33f77303efae1f075b06b01574b395c18cfbaae0044",
+  "release_artifacts_verified_before_and_after": 113,
+  "project": "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/UIE4_VN",
+  "publicdata": "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/publicdata",
+  "output": "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/UIE4_VN/outputs/motivation_candidate_selection_20261114",
+  "selection": "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/UIE4_VN/outputs/motivation_candidate_selection_20261114/candidate_selection.json",
+  "selection_sha256": "9f62b22c27b317208c731eaa428ad54686a4360382c561123bbc6b16eab6f0f4",
+  "script_sha256": "31b48bc44094c03d342dde4e0d52e3e093dd145900cf033695fcffebe346ea38",
+  "command_argv": [
+    "/Users/paxton/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "-B",
+    "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/UIE4_VN/outputs/motivation_candidate_selection_20261114/generate_candidates.py",
+    "--project",
+    "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/UIE4_VN",
+    "--publicdata",
+    "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/publicdata",
+    "--matplotlib-colormap",
+    "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/analysis/model_complexity_20261106/.deps/matplotlib/_cm_listed.py",
+    "--font-dir",
+    "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/analysis/model_complexity_20261106/.deps/matplotlib/mpl-data/fonts/ttf",
+    "--pdftoppm",
+    "/Users/paxton/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override/pdftoppm",
+    "--output",
+    "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/UIE4_VN/outputs/motivation_candidate_selection_20261114"
+  ],
+  "runtime": {
+    "python": "3.12.14",
+    "platform": "macOS-27.2-arm64-arm-64bit",
+    "numpy": "2.3.5",
+    "Pillow": "13.0.0",
+    "reportlab": "4.4.9",
+    "pypdf": "6.21.4",
+    "pdftoppm": "/Users/paxton/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override/pdftoppm",
+    "poppler": "pdftoppm version 26.05.0"
+  },
+  "rendering": {
+    "magma_table": "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/analysis/model_complexity_20261106/.deps/matplotlib/_cm_listed.py",
+    "magma_table_sha256": "ddad3698f5129ceb1792a445371286c08bc9080298e657b3054aea19c9659ef9",
+    "magma_rgb_lut_sha256": "e2e7c21b2cdebd6f55d07fae05ea13bb4b4f0908509892384b87c747b9f319f6",
+    "color_scale": [
+      0,
+      1
+    ],
+    "linear": true,
+    "png_dpi": 300,
+    "font_dir": "/Users/paxton/Project/PythonProject/02_CL_Papers/UIE4_workspace/analysis/model_complexity_20261106/.deps/matplotlib/mpl-data/fonts/ttf",
+    "fonts_sha256": {
+      "DejaVuSans.ttf": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22",
+      "DejaVuSans-Bold.ttf": "b184b89e3c1075f22f6b71575b6fc20d4972b3cfd3b23322ca6fd596dcaef167"
+    },
+    "proof_column_width_pt": 236.25,
+    "proof_display_dpi": 96
+  },
+  "datasets": {
+    "lsui": {
+      "verified_pairs": 428,
+      "source_location_counts_files": {
+        "LSUI": 784,
+        "LSUI19": 72
+      },
+      "release_data_root": "/home/paxton/pro/publicdata/LSUI19_dup_train",
+      "release_versions": {
+        "numpy": "2.4.4",
+        "Pillow": "12.2.0",
+        "PyYAML": "6.0.3",
+        "torch_dataset_import_only": "2.13.0+cu126",
+        "matplotlib": "3.11.2"
+      },
+      "absolute_tolerance_strict": 2e-10,
+      "max_absolute_difference_by_field": {
+        "mu_R": 0.0,
+        "mu_G": 0.0,
+        "mu_B": 0.0,
+        "e_raw": 0.0,
+        "e_global": 0.0,
+        "eta_spatial": 0.0,
+        "patch_variance_16": 8.326672684688674e-17,
+        "patch_spatial_retention_16": 7.216449660063518e-15,
+        "oracle_pixel_clipped_fraction": 0.0,
+        "oracle_scalar_clipped_fraction": 0.0,
+        "display_remaining_clipped_fraction": 0.0
+      },
+      "max_absolute_difference": 7.216449660063518e-15,
+      "selected_max_absolute_difference_by_image": {
+        "167": 0.0,
+        "320": 2.220446049250313e-16,
+        "350": 3.3306690738754696e-16,
+        "441": 1.5543122344752192e-15,
+        "644": 1.1102230246251565e-16,
+        "827": 4.440892098500626e-16,
+        "1363": 3.3306690738754696e-16,
+        "2414": 3.3306690738754696e-16,
+        "3589": 0.0,
+        "4092": 4.440892098500626e-16
+      },
+      "historic_assets_exact_array_and_svg_pixel_matches": [
+        "320",
+        "3316",
+        "3809"
+      ],
+      "historical_metrics": {
+        "320": {
+          "selection_rule": "80th-percentile spatial block variance",
+          "percentiles": {
+            "shift": 68.57476635514018,
+            "eta": 58.76168224299065,
+            "v16": 80.0233644859813,
+            "retention": 92.87383177570094,
+            "e_global": 77.45327102803738
+          },
+          "oracle_pixel_clipped_fraction": 0.0
+        },
+        "3316": {
+          "selection_rule": "80th-percentile channel mean discrepancy",
+          "percentiles": {
+            "shift": 71.3785046728972,
+            "eta": 10.397196261682243,
+            "v16": 19.742990654205606,
+            "retention": 14.13551401869159,
+            "e_global": 29.088785046728972
+          },
+          "oracle_pixel_clipped_fraction": 0.004669189453125
+        },
+        "3809": {
+          "selection_rule": "median spatial block variance",
+          "percentiles": {
+            "shift": 47.07943925233645,
+            "eta": 36.799065420560744,
+            "v16": 50.11682242990654,
+            "retention": 72.7803738317757,
+            "e_global": 35.63084112149533
+          },
+          "oracle_pixel_clipped_fraction": 0.089080810546875
+        }
+      },
+      "eligible_count_by_band": {
+        "A1": 32,
+        "A2": 41,
+        "A3": 45,
+        "A4": 39,
+        "B1": 23,
+        "B2": 21,
+        "B3": 37,
+        "B4": 24,
+        "C1": 22,
+        "C2": 41
+      },
+      "sheet_png_dimensions_px": [
+        2842,
+        6425
+      ],
+      "sheet_pdf_dimensions_pt": [
+        682,
+        1542
+      ]
+    },
+    "uieb": {
+      "verified_pairs": 90,
+      "source_location_counts_files": {
+        "UIEB19": 180
+      },
+      "release_data_root": "/home/paxton/pro/publicdata/UIEB19",
+      "release_versions": {
+        "numpy": "2.4.4",
+        "Pillow": "12.2.0",
+        "PyYAML": "6.0.3",
+        "torch_dataset_import_only": "2.13.0+cu126",
+        "matplotlib": "3.11.2"
+      },
+      "absolute_tolerance_strict": 2e-10,
+      "max_absolute_difference_by_field": {
+        "mu_R": 0.0,
+        "mu_G": 0.0,
+        "mu_B": 0.0,
+        "e_raw": 0.0,
+        "e_global": 0.0,
+        "eta_spatial": 0.0,
+        "patch_variance_16": 4.85722573273506e-17,
+        "patch_spatial_retention_16": 1.887379141862766e-15,
+        "oracle_pixel_clipped_fraction": 0.0,
+        "oracle_scalar_clipped_fraction": 0.0,
+        "display_remaining_clipped_fraction": 0.0
+      },
+      "max_absolute_difference": 1.887379141862766e-15,
+      "selected_max_absolute_difference_by_image": {
+        "1660": 1.887379141862766e-15,
+        "208_img_": 2.220446049250313e-16,
+        "213_img_": 1.1102230246251565e-16,
+        "2787": 1.5543122344752192e-15,
+        "3001": 8.881784197001252e-16,
+        "602_img_": 5.551115123125783e-16,
+        "605_img_": 1.1102230246251565e-16,
+        "6062": 1.1102230246251565e-16,
+        "6820": 0.0,
+        "9896": 2.220446049250313e-16
+      },
+      "historic_assets_exact_array_and_svg_pixel_matches": [
+        "212_img_",
+        "213_img_",
+        "605_img_"
+      ],
+      "historical_metrics": {
+        "212_img_": {
+          "selection_rule": "median spatial block variance",
+          "percentiles": {
+            "shift": 7.222222222222222,
+            "eta": 89.44444444444444,
+            "v16": 50.55555555555556,
+            "retention": 56.111111111111114,
+            "e_global": 43.888888888888886
+          },
+          "oracle_pixel_clipped_fraction": 0.0
+        },
+        "213_img_": {
+          "selection_rule": "80th-percentile spatial block variance",
+          "percentiles": {
+            "shift": 72.77777777777777,
+            "eta": 59.44444444444444,
+            "v16": 79.44444444444444,
+            "retention": 38.333333333333336,
+            "e_global": 83.88888888888889
+          },
+          "oracle_pixel_clipped_fraction": 0.0
+        },
+        "605_img_": {
+          "selection_rule": "80th-percentile channel mean discrepancy",
+          "percentiles": {
+            "shift": 50.55555555555556,
+            "eta": 80.55555555555556,
+            "v16": 87.22222222222223,
+            "retention": 62.77777777777778,
+            "e_global": 89.44444444444444
+          },
+          "oracle_pixel_clipped_fraction": 0.0
+        }
+      },
+      "eligible_count_by_band": {
+        "A1": 12,
+        "A2": 9,
+        "A3": 7,
+        "A4": 8,
+        "B1": 3,
+        "B2": 5,
+        "B3": 6,
+        "B4": 4,
+        "C1": 5,
+        "C2": 11
+      },
+      "sheet_png_dimensions_px": [
+        2842,
+        6425
+      ],
+      "sheet_pdf_dimensions_pt": [
+        682,
+        1542
+      ]
+    }
+  }
+}

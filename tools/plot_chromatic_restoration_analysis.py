@@ -40,7 +40,7 @@ from src.v16.dataset import LSUIDataset, ManifestEntry, read_manifest
 from src.v16.utils import atomic_json, load_yaml, sha256_file
 
 
-SCRIPT_VERSION = "1.3"
+SCRIPT_VERSION = "1.5"
 EXPECTED_VERSION = "v16"
 DEFAULT_OUTPUT_NAME = "chromatic_restoration_analysis"
 ANALYSIS_FILENAMES = (
@@ -536,12 +536,6 @@ def _shared_hist_norm(histograms: Sequence[np.ndarray]) -> LogNorm:
     return LogNorm(vmin=minimum, vmax=maximum)
 
 
-def _row_label(index: int, sample_id: str, show_sample_id: bool) -> str:
-    letter = chr(ord("a") + index) if index < 26 else str(index + 1)
-    label = f"({letter})"
-    return f"{label}\n{sample_id}" if show_sample_id else label
-
-
 def _paper_rc() -> dict[str, Any]:
     return {
         "font.family": "DejaVu Sans",
@@ -604,7 +598,7 @@ def save_final_figure(
 
     row_count = len(samples)
     row_spacing = 0.12
-    top_mm, bottom_mm = 10.0, 6.6
+    top_mm, bottom_mm = 6.0, 8.6
     height_mm = top_mm + bottom_mm + 13.0 * (row_count + (row_count - 1) * row_spacing)
     figure_style = {
         **_paper_rc(),
@@ -686,26 +680,22 @@ def save_final_figure(
                 )
                 axis.set_xticks([])
                 axis.set_yticks([])
-            axes[row, 0].annotate(
-                _row_label(row, sample.entry.sample_id, show_sample_id),
-                xy=(0.0, 1.0),
-                xycoords="axes fraction",
-                xytext=(-14.5, -0.6),
-                textcoords="offset points",
-                ha="right",
-                va="top",
-                weight="bold",
-            )
+            if show_sample_id:
+                axes[row, 0].annotate(
+                    sample.entry.sample_id,
+                    xy=(0.0, 1.0),
+                    xycoords="axes fraction",
+                    xytext=(-14.5, -0.6),
+                    textcoords="offset points",
+                    ha="right",
+                    va="top",
+                    weight="bold",
+                )
         for axis, title in zip(axes[0], columns, strict=True):
             axis.set_title(title, pad=2.2, linespacing=1.0)
-        for first, last, title in (
-            (0, 2, "CIELAB a*-b* distribution"),
-            (3, 4, "Spatial color error"),
-        ):
-            x = (axes[0, first].get_position().x0 + axes[0, last].get_position().x1) / 2
-            figure.text(
-                x, 1.0 - 0.9 / height_mm, title, ha="center", va="top", weight="bold"
-            )
+        for label, first, last in (("(a)", 0, 2), ("(b)", 3, 4)):
+            center = (axes[-1, first].get_position().x0 + axes[-1, last].get_position().x1) / 2
+            figure.text(center, 1.0 / height_mm, label, ha="center", va="bottom", weight="bold")
         if de_image is None:
             raise RuntimeError("DeltaE00 image artist was not created")
         colorbar = figure.colorbar(
